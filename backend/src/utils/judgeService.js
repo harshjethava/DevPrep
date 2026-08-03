@@ -5,6 +5,7 @@
  * Exports the same interface: executeCode(), runAgainstTestCases()
  */
 
+const path = require('path');
 const { runCode: dockerRunCode } = require('./runInDocker');
 
 const SUPPORTED_LANGUAGES = new Set([
@@ -14,6 +15,38 @@ const SUPPORTED_LANGUAGES = new Set([
   'c',
   'java'
 ]);
+
+// ─── Path sanitizer (second layer of defence) ─────────────────────────────────
+// Even if the executor leaks a path, this catches it before the API response
+// reaches the client.
+const BACKEND_ROOT = path.resolve(__dirname, '../..');
+
+const SERVER_PATH_PATTERNS = [
+  // Match the backend root and any subpath (forward or back slashes)
+  new RegExp(
+    BACKEND_ROOT.replace(/[\\/]/g, '[/\\\\]').replace(/[.*+?^${}()|[\]]/g, '\\$&') + '[/\\\\]?[^\n"]*',
+    'gi'
+  ),
+  // Any Windows absolute path  e.g. C:\Users\...  or  C:/Users/...
+  /[A-Za-z]:[/\\][^\n"']*/g,
+  // Partial paths leaking in Node.js stack traces: "at Object.<anonymous> (path/to/file.js:1:1)"
+  // Match filename paths inside parentheses in stack frames
+  /\(([A-Za-z]:[/\\][^)\n]+)\)/g,
+  // Paths with project-specific dir names (project name as fallback)
+  /(?:DevPrep|executor|AWT project)[/\\][^\n"']*/gi,
+];
+
+function sanitizeServerPaths(msg) {
+  if (!msg) return '';
+  let clean = String(msg);
+  // First pass: replace full path matches
+  for (const pattern of SERVER_PATH_PATTERNS) {
+    clean = clean.replace(pattern, '<sandbox>');
+  }
+  // Second pass: strip any remaining absolute path fragments (starts with drive letter)
+  clean = clean.replace(/[A-Za-z]:[/\\]\S+/g, '<sandbox>');
+  return clean;
+}
 
 /**
  * Execute code with given stdin input.
@@ -41,6 +74,9 @@ async function executeCode(language, sourceCode, stdin = '') {
   const result = await dockerRunCode({ code: sourceCode, language: lang, input: stdin });
   const elapsed = ((Date.now() - start) / 1000).toFixed(3);
 
+  // Sanitize any paths that leaked through from the executor
+  const cleanError = sanitizeServerPaths(result.error || '');
+
   // Map Docker result to the standard judge interface
   if (result.timedOut) {
     return {
@@ -56,18 +92,18 @@ async function executeCode(language, sourceCode, stdin = '') {
   if (result.compileError) {
     return {
       stdout: '',
-      stderr: result.error,
+      stderr: cleanError,
       status: 'compile_error',
       time: elapsed,
       memory: '0',
-      compileOutput: result.error
+      compileOutput: cleanError
     };
   }
 
   if (result.error && !result.output) {
     return {
       stdout: '',
-      stderr: result.error,
+      stderr: cleanError,
       status: 'runtime_error',
       time: elapsed,
       memory: '0',
@@ -77,7 +113,7 @@ async function executeCode(language, sourceCode, stdin = '') {
 
   return {
     stdout: result.output,
-    stderr: result.error || '',
+    stderr: cleanError,
     status: 'accepted',
     time: elapsed,
     memory: '0',
@@ -112,7 +148,7 @@ async function runAgainstTestCases(language, sourceCode, testCases) {
   for (const tc of testCases) {
     const execResult = await executeCode(language, sourceCode, tc.input);
 
-    const actualOutput = (execResult.stdout || '').trim();
+    const actualOutput   = (execResult.stdout || '').trim();
     const expectedOutput = (tc.expectedOutput || '').trim();
     const passed =
       execResult.status === 'accepted' && compareOutput(actualOutput, expectedOutput);
@@ -124,7 +160,11 @@ async function runAgainstTestCases(language, sourceCode, testCases) {
       expectedOutput,
       actualOutput,
       passed,
-      status: passed ? 'accepted' : execResult.status === 'accepted' ? 'wrong_answer' : execResult.status,
+      status: passed
+        ? 'accepted'
+        : execResult.status === 'accepted'
+          ? 'wrong_answer'
+          : execResult.status,
       time: execResult.time,
       memory: execResult.memory,
       stderr: execResult.stderr,

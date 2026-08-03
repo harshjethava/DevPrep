@@ -1,24 +1,17 @@
+// Codeforces 1A — Theatre Square
 import java.util.*;
 
 public class Main {
     public static void main(String[] args) {
         Scanner sc = new Scanner(System.in);
-        int n = sc.nextInt();
+        long n = sc.nextLong();
+        long m = sc.nextLong();
+        long a = sc.nextLong();
         
-        int height = 0;
-        int total = 0;
+        // ceil(n/a) in integer arithmetic
+        long tilesN = (n + a - 1) / a;
+        long tilesM = (m + a - 1) / a;
         
-        for (int i = 1; ; i++) {
-            int cubesForLevel = i * (i + 1) / 2;
-            
-            if (total + cubesForLevel > n) {
-                break;
-            }
-            
-            total += cubesForLevel;
-            height++;
-        }
-        
-        System.out.println(height);
+        System.out.println(tilesN * tilesM);
     }
 }
