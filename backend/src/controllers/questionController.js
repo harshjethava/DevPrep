@@ -118,6 +118,7 @@ async function saveQuestions(req, res, next) {
         await SavedQuestion.updateOne(
           { userId: user._id, questionKey },
           {
+            $set: { updatedAt: new Date() },
             $setOnInsert: {
               userId: user._id,
               role: safeRole,
@@ -165,11 +166,11 @@ async function getSavedStats(req, res, next) {
             topic: { $arrayElemAt: ['$topics', 0] }
           },
           count: { $sum: 1 },
-          lastSavedAt: { $max: '$createdAt' }
+          lastSavedAt: { $max: '$updatedAt' }
         }
       },
       { $sort: { lastSavedAt: -1 } },
-      { $limit: 10 },
+      { $limit: 50 },
       {
         $project: {
           _id: 0,

@@ -1,7 +1,8 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { motion } from 'framer-motion';
 import { useNavigate } from 'react-router-dom';
-import { useAuth, useClerk, useUser } from '@clerk/clerk-react';
+import { useClerk, useUser } from '@clerk/clerk-react';
+import { useReadyAuth } from '../hooks/useReadyAuth';
 import { toast } from 'sonner';
 import {
   LayoutDashboard,
@@ -52,10 +53,10 @@ function normalizeSkills(input) {
 const ProfileEdit = () => {
   const navigate = useNavigate();
   const { user } = useUser();
-  const { getToken, isLoaded: authLoaded, isSignedIn } = useAuth();
+  const { ready, getToken } = useReadyAuth();
   const { signOut } = useClerk();
   const [mobileSidebarOpen, setMobileSidebarOpen] = useState(false);
-  const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
+  const [sidebarCollapsed, setSidebarCollapsed] = useState(() => localStorage.getItem("sidebarCollapsed") === "true");
   const [confirmLogoutOpen, setConfirmLogoutOpen] = useState(false);
   const [logoutLoading, setLogoutLoading] = useState(false);
 
@@ -122,7 +123,7 @@ const ProfileEdit = () => {
   );
 
   useEffect(() => {
-    if (!authLoaded || !isSignedIn || !user) return;
+    if (!ready) return;
 
     (async () => {
       setLoading(true);
@@ -155,7 +156,7 @@ const ProfileEdit = () => {
         setLoading(false);
       }
     })();
-  }, [authLoaded, isSignedIn, displayNameFallback, getToken, user]);
+  }, [ready, displayNameFallback, getToken, user]);
 
   const validationErrors = useMemo(() => {
     const errors = {};
@@ -279,12 +280,12 @@ const ProfileEdit = () => {
   };
 
   return (
-    <div className="min-h-screen w-full bg-gradient-to-br from-[#0f172a] via-[#030712] to-[#020617] text-white overflow-hidden relative">
+    <div className="min-h-screen w-full bg-gradient-to-br from-[#0f172a] via-[#030712] to-[#020617] text-white overflow-x-hidden relative">
       <EnhancedAnimatedBackground />
 
       <div className="relative z-10 min-h-screen p-4 lg:p-8">
-        <div className="mx-auto w-full max-w-7xl">
-          <div className="flex gap-4">
+        <div className="mx-auto w-full max-w-[1600px]">
+          <div className="flex gap-5">
             <Sidebar
               openMobile={mobileSidebarOpen}
               onCloseMobile={() => setMobileSidebarOpen(false)}
@@ -300,7 +301,7 @@ const ProfileEdit = () => {
               <div className="flex items-center gap-3">
                 <div className="flex-1 min-w-0">
                   <Navbar
-                    brand="DevPrep"
+                    brand=""
                     activeLabel="Profile"
                     links={navbarLinks}
                     onNavigate={safeNavigate}
@@ -336,7 +337,7 @@ const ProfileEdit = () => {
                     <button
                       type="button"
                       className={`px-4 py-2 rounded-2xl border border-white/10 hover:border-white/20 font-semibold inline-flex items-center gap-2 ${
-                        canSave ? 'bg-gradient-to-r from-violet-600 to-indigo-600' : 'bg-white/5 text-slate-400'
+                        canSave ? 'bg-violet-600 hover:bg-violet-700 border border-violet-500 shadow-[0_0_15px_rgba(139,92,246,0.2)] hover:shadow-[0_0_25px_rgba(139,92,246,0.35)]' : 'bg-white/5 border-white/10 text-slate-400'
                       }`}
                       onClick={onSave}
                       disabled={!canSave}
@@ -404,7 +405,7 @@ const ProfileEdit = () => {
                           <input
                             value={name}
                             onChange={(e) => setName(e.target.value)}
-                            className="mt-2 w-full px-4 py-2.5 rounded-2xl bg-slate-950/40 border border-white/10 focus:outline-none focus:border-white/20 text-slate-100"
+                            className="mt-2 w-full px-4 py-2.5 rounded-2xl bg-white/5 border border-white/10 focus:outline-none focus:border-violet-500/50 focus:bg-white/10 transition-colors text-slate-100 placeholder:text-slate-500"
                             placeholder="Your name"
                             disabled={loading || saving}
                           />
@@ -418,7 +419,7 @@ const ProfileEdit = () => {
                           <input
                             value={email}
                             readOnly
-                            className="mt-2 w-full px-4 py-2.5 rounded-2xl bg-slate-950/20 border border-white/10 text-slate-300"
+                            className="mt-2 w-full px-4 py-2.5 rounded-2xl bg-white/5 border border-white/10 opacity-60 cursor-not-allowed text-slate-300"
                             placeholder="Email"
                           />
                         </div>
@@ -428,11 +429,12 @@ const ProfileEdit = () => {
                           <select
                             value={experienceLevel}
                             onChange={(e) => setExperienceLevel(e.target.value)}
-                            className="mt-2 w-full px-4 py-2.5 rounded-2xl bg-slate-950/40 border border-white/10 focus:outline-none focus:border-white/20 text-slate-100"
+                            className="mt-2 w-full px-4 py-2.5 rounded-2xl bg-white/5 border border-white/10 focus:outline-none focus:border-violet-500/50 focus:bg-white/10 transition-colors text-slate-100 appearance-none cursor-pointer"
                             disabled={loading || saving}
+                            style={{ backgroundImage: 'url("data:image/svg+xml,%3Csvg xmlns=\'http://www.w3.org/2000/svg\' fill=\'none\' viewBox=\'0 0 24 24\' stroke=\'%2394a3b8\'%3E%3Cpath stroke-linecap=\'round\' stroke-linejoin=\'round\' stroke-width=\'2\' d=\'M19 9l-7 7-7-7\'%3E%3C/path%3E%3C/svg%3E")', backgroundRepeat: 'no-repeat', backgroundPosition: 'right 1rem center', backgroundSize: '1.2em 1.2em', paddingRight: '2.5rem' }}
                           >
                             {EXPERIENCE_LEVELS.map((lvl) => (
-                              <option key={lvl} value={lvl}>
+                              <option key={lvl} value={lvl} className="bg-slate-900 text-slate-100 py-2">
                                 {lvl}
                               </option>
                             ))}
@@ -447,7 +449,7 @@ const ProfileEdit = () => {
                           <input
                             value={targetRole}
                             onChange={(e) => setTargetRole(e.target.value)}
-                            className="mt-2 w-full px-4 py-2.5 rounded-2xl bg-slate-950/40 border border-white/10 focus:outline-none focus:border-white/20 text-slate-100"
+                            className="mt-2 w-full px-4 py-2.5 rounded-2xl bg-white/5 border border-white/10 focus:outline-none focus:border-violet-500/50 focus:bg-white/10 transition-colors text-slate-100 placeholder:text-slate-500"
                             placeholder="e.g. Frontend Developer"
                             disabled={loading || saving}
                           />
@@ -484,7 +486,7 @@ const ProfileEdit = () => {
                               addSkill(skillInput);
                             }
                           }}
-                          className="w-full px-4 py-2.5 rounded-2xl bg-slate-950/40 border border-white/10 focus:outline-none focus:border-white/20 text-slate-100"
+                          className="w-full px-4 py-2.5 rounded-2xl bg-white/5 border border-white/10 focus:outline-none focus:border-violet-500/50 focus:bg-white/10 transition-colors text-slate-100 placeholder:text-slate-500"
                           placeholder="Type a skill and press Enter"
                           disabled={loading || saving}
                         />
@@ -517,7 +519,7 @@ const ProfileEdit = () => {
                         value={bio}
                         onChange={(e) => setBio(e.target.value)}
                         rows={5}
-                        className="mt-3 w-full px-4 py-3 rounded-2xl bg-slate-950/40 border border-white/10 focus:outline-none focus:border-white/20 text-slate-100 resize-none"
+                        className="mt-3 w-full px-4 py-3 rounded-2xl bg-white/5 border border-white/10 focus:outline-none focus:border-violet-500/50 focus:bg-white/10 transition-colors text-slate-100 resize-none placeholder:text-slate-500"
                         placeholder="Tell us about yourself..."
                         disabled={loading || saving}
                       />
@@ -554,7 +556,7 @@ const ProfileEdit = () => {
             </button>
             <button
               type="button"
-              className="px-4 py-2 rounded-xl bg-gradient-to-r from-violet-600 to-indigo-600 border border-white/10 hover:border-white/20 font-semibold disabled:opacity-60"
+              className="px-4 py-2 rounded-xl bg-violet-600 hover:bg-violet-700 border border-violet-500 text-white font-semibold disabled:opacity-50 transition-all duration-300 shadow-[0_0_15px_rgba(139,92,246,0.2)] hover:shadow-[0_0_25px_rgba(139,92,246,0.35)]"
               onClick={handleLogout}
               disabled={logoutLoading}
             >

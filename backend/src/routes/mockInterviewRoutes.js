@@ -3,6 +3,7 @@ const { body, param } = require('express-validator');
 
 const { clerkAuthMiddleware } = require('../middleware/clerkAuth');
 const { validateRequest } = require('../middleware/validateRequest');
+const { mockInterviewStartLimiter, mockInterviewMessageLimiter } = require('../middleware/rateLimiters');
 const {
   startSession,
   getSession,
@@ -18,6 +19,7 @@ router.use(clerkAuthMiddleware());
 
 router.post(
   '/start',
+  mockInterviewStartLimiter,
   [
     body('interviewType')
       .isIn(['technical', 'hr', 'mixed', 'resume-based'])
@@ -48,6 +50,7 @@ router.get(
 
 router.post(
   '/:id/message',
+  mockInterviewMessageLimiter,
   [
     param('id').isMongoId().withMessage('Invalid session id'),
     body('content').trim().notEmpty().withMessage('Message content is required')

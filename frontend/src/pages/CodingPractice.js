@@ -2,7 +2,8 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { motion } from 'framer-motion';
 import { useNavigate, useSearchParams } from 'react-router-dom';
 import { toast } from 'sonner';
-import { useAuth, useUser, useClerk } from '@clerk/clerk-react';
+import { useClerk, useUser } from '@clerk/clerk-react';
+import { useReadyAuth } from '../hooks/useReadyAuth';
 import {
   LayoutDashboard,
   FileText,
@@ -54,9 +55,9 @@ const SORT_OPTIONS = [
 ];
 
 const difficultyColors = {
-  easy: 'bg-emerald-500/20 text-emerald-300 border-emerald-500/30',
-  medium: 'bg-amber-500/20 text-amber-300 border-amber-500/30',
-  hard: 'bg-red-500/20 text-red-300 border-red-500/30'
+  easy: 'bg-emerald-500/20 border-emerald-500 text-emerald-400',
+  medium: 'bg-yellow-500/20 border-yellow-500 text-yellow-400',
+  hard: 'bg-red-500/20 border-red-500 text-red-400'
 };
 
 const statusIcons = {
@@ -68,7 +69,7 @@ const statusIcons = {
 const CodingPractice = () => {
   const navigate = useNavigate();
   const [searchParams, setSearchParams] = useSearchParams();
-  const { getToken, isLoaded: authLoaded, isSignedIn } = useAuth();
+  const { ready, getToken } = useReadyAuth();
   const { user } = useUser();
   const { signOut } = useClerk();
 
@@ -77,14 +78,17 @@ const CodingPractice = () => {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(null);
 
+  // search = raw input value (drives the input UI immediately)
+  // debouncedSearch = debounced value that actually triggers the API call
   const [search, setSearch] = useState(searchParams.get('q') || '');
+  const [debouncedSearch, setDebouncedSearch] = useState(searchParams.get('q') || '');
   const [difficulty, setDifficulty] = useState(searchParams.get('difficulty') || 'All');
   const [category, setCategory] = useState(searchParams.get('category') || 'All');
   const [sort, setSort] = useState(searchParams.get('sort') || 'recent');
   const [page, setPage] = useState(parseInt(searchParams.get('page'), 10) || 1);
 
   const [mobileSidebarOpen, setMobileSidebarOpen] = useState(false);
-  const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
+  const [sidebarCollapsed, setSidebarCollapsed] = useState(() => localStorage.getItem("sidebarCollapsed") === "true");
   const [confirmLogoutOpen, setConfirmLogoutOpen] = useState(false);
   const [logoutLoading, setLogoutLoading] = useState(false);
   const [dbProfile, setDbProfile] = useState(null);
@@ -93,7 +97,7 @@ const CodingPractice = () => {
 
   // Fetch db profile
   useEffect(() => {
-    if (!authLoaded || !isSignedIn) return;
+    if (!ready) return;
     (async () => {
       try {
         const token = await getToken();
@@ -102,11 +106,20 @@ const CodingPractice = () => {
         setDbProfile(res.data?.user || null);
       } catch (_) {}
     })();
-  }, [authLoaded, isSignedIn, getToken]);
+  }, [ready, getToken]);
 
-  // Fetch problems
+  // Debounce: update debouncedSearch 350ms after the user stops typing
+  useEffect(() => {
+    if (searchTimerRef.current) clearTimeout(searchTimerRef.current);
+    searchTimerRef.current = setTimeout(() => {
+      setDebouncedSearch(search);
+      setPage(1); // reset to page 1 when search changes
+    }, 350);
+    return () => clearTimeout(searchTimerRef.current);
+  }, [search]);
+
   const fetchProblems = useCallback(async () => {
-    if (!authLoaded || !isSignedIn) return;
+    if (!ready) return;
     setLoading(true);
     setError(null);
     try {
@@ -116,7 +129,7 @@ const CodingPractice = () => {
       const params = { page, limit: 20, sort };
       if (difficulty !== 'All') params.difficulty = difficulty;
       if (category !== 'All') params.category = category;
-      if (search.trim()) params.q = search.trim();
+      if (debouncedSearch.trim()) params.q = debouncedSearch.trim();
 
       const res = await codingAPI.listProblems(token, params);
       setProblems(res.data.problems || []);
@@ -127,7 +140,7 @@ const CodingPractice = () => {
     } finally {
       setLoading(false);
     }
-  }, [authLoaded, isSignedIn, getToken, page, sort, difficulty, category, search]);
+  }, [ready, getToken, page, sort, difficulty, category, debouncedSearch]);
 
   useEffect(() => {
     fetchProblems();
@@ -146,9 +159,7 @@ const CodingPractice = () => {
 
   const handleSearch = (value) => {
     setSearch(value);
-    setPage(1);
-    if (searchTimerRef.current) clearTimeout(searchTimerRef.current);
-    searchTimerRef.current = setTimeout(() => {}, 300);
+    // debouncedSearch + page reset are handled by the useEffect above
   };
 
   const handleLogout = async () => {
@@ -186,26 +197,33 @@ const CodingPractice = () => {
 
   const displayName = user?.fullName || user?.username || (dbProfile && dbProfile.name) || 'User';
 
-  // Skeleton loader
   const SkeletonCard = () => (
-    <div className="rounded-2xl border border-white/10 bg-white/5 p-4 animate-pulse">
-      <div className="flex items-center gap-3">
-        <div className="w-8 h-8 rounded-full bg-white/10" />
-        <div className="flex-1 space-y-2">
-          <div className="h-4 bg-white/10 rounded w-2/3" />
-          <div className="h-3 bg-white/10 rounded w-1/3" />
-        </div>
+    <div className="w-full text-left grid grid-cols-1 sm:grid-cols-12 gap-2 px-5 py-3.5 border-b border-white/5">
+      <div className="sm:col-span-1 flex items-center">
+        <div className="w-4 h-4 rounded-full bg-white/10 animate-pulse" />
+      </div>
+      <div className="sm:col-span-5 flex items-center gap-2">
+        <div className="h-4 bg-white/10 rounded animate-pulse w-48" />
+      </div>
+      <div className="sm:col-span-2 flex items-center">
+        <div className="h-3 bg-white/10 rounded animate-pulse w-16" />
+      </div>
+      <div className="sm:col-span-2 flex items-center">
+        <div className="h-4 bg-white/10 rounded animate-pulse w-12" />
+      </div>
+      <div className="sm:col-span-2 flex items-center">
+        <div className="h-3 bg-white/10 rounded animate-pulse w-8" />
       </div>
     </div>
   );
 
   return (
-    <div className="min-h-screen w-full bg-gradient-to-br from-[#0f172a] via-[#030712] to-[#020617] text-white overflow-hidden relative">
+    <div className="min-h-screen w-full bg-gradient-to-br from-[#0f172a] via-[#030712] to-[#020617] text-white overflow-clip relative">
       <EnhancedAnimatedBackground />
 
       <div className="relative z-10 min-h-screen p-4 lg:p-8">
-        <div className="mx-auto w-full max-w-7xl">
-          <div className="flex gap-4">
+        <div className="mx-auto w-full max-w-[1600px]">
+          <div className="flex gap-5">
             <Sidebar
               openMobile={mobileSidebarOpen}
               onCloseMobile={() => setMobileSidebarOpen(false)}
@@ -224,7 +242,7 @@ const CodingPractice = () => {
               <div className="flex items-center gap-3">
                 <div className="flex-1 min-w-0">
                   <Navbar
-                    brand="DevPrep"
+                    brand=""
                     activeLabel="Coding"
                     links={navbarLinks}
                     onNavigate={safeNavigate}
@@ -235,45 +253,14 @@ const CodingPractice = () => {
                 </div>
               </div>
 
-              {/* Header */}
-              <motion.div
-                initial={{ opacity: 0, y: 8 }}
-                animate={{ opacity: 1, y: 0 }}
-                transition={{ duration: 0.6 }}
-                className="mt-6"
-              >
-                <div className="relative overflow-hidden rounded-3xl border border-white/10 bg-white/5 backdrop-blur-xl shadow-[0_10px_40px_rgba(0,0,0,0.35)]">
-                  <div className="absolute inset-0">
-                    <div className="absolute -top-24 -right-24 w-72 h-72 rounded-full bg-violet-600/20 blur-3xl" />
-                    <div className="absolute -bottom-24 -left-24 w-72 h-72 rounded-full bg-cyan-600/15 blur-3xl" />
-                  </div>
-                  <div className="relative p-6 sm:p-7">
-                    <div className="flex flex-col sm:flex-row sm:items-center gap-4">
-                      <div className="min-w-0">
-                        <div className="text-2xl sm:text-3xl font-semibold flex items-center gap-3">
-                          <Code2 className="w-7 h-7 text-violet-400" />
-                          Coding Practice
-                        </div>
-                        <div className="text-sm text-slate-400 mt-2">
-                          Solve problems, sharpen your skills, and track your progress
-                        </div>
-                      </div>
-                      <div className="sm:ml-auto text-right">
-                        <div className="text-xs text-slate-500">
-                          {pagination.total} problem{pagination.total !== 1 ? 's' : ''} available
-                        </div>
-                      </div>
-                    </div>
-                  </div>
-                </div>
-              </motion.div>
+
 
               {/* Search + Filters */}
               <motion.div
                 initial={{ opacity: 0, y: 10 }}
                 animate={{ opacity: 1, y: 0 }}
                 transition={{ duration: 0.5, delay: 0.05 }}
-                className="mt-5 space-y-4"
+                className="mt-6 space-y-4"
               >
                 {/* Search bar */}
                 <div className="flex items-center gap-3">
@@ -326,7 +313,7 @@ const CodingPractice = () => {
                     initial={{ opacity: 0, height: 0 }}
                     animate={{ opacity: 1, height: 'auto' }}
                     exit={{ opacity: 0, height: 0 }}
-                    className="rounded-2xl border border-white/10 bg-white/5 backdrop-blur-xl p-4 space-y-4"
+                    className="rounded-2xl border border-white/10 bg-[#1e1e2d]/60 backdrop-blur-xl p-4 space-y-4"
                   >
                     {/* Difficulty chips */}
                     <div>
@@ -339,7 +326,7 @@ const CodingPractice = () => {
                             className={`px-3 py-1.5 rounded-lg text-xs font-medium border transition-all ${
                               difficulty === d
                                 ? d === 'All'
-                                  ? 'bg-violet-600/30 border-violet-500/40 text-violet-200'
+                                  ? 'bg-violet-600/20 border-violet-500 text-violet-300'
                                   : difficultyColors[d]
                                 : 'bg-white/5 border-white/10 text-slate-400 hover:border-white/20'
                             }`}
@@ -360,7 +347,7 @@ const CodingPractice = () => {
                             onClick={() => { setCategory(c); setPage(1); }}
                             className={`px-3 py-1.5 rounded-lg text-xs font-medium border transition-all ${
                               category === c
-                                ? 'bg-cyan-600/25 border-cyan-500/40 text-cyan-200'
+                                ? 'bg-violet-600/20 border-violet-500 text-violet-300'
                                 : 'bg-white/5 border-white/10 text-slate-400 hover:border-white/20'
                             }`}
                           >
@@ -378,11 +365,11 @@ const CodingPractice = () => {
                 initial={{ opacity: 0, y: 10 }}
                 animate={{ opacity: 1, y: 0 }}
                 transition={{ duration: 0.5, delay: 0.1 }}
-                className="mt-5"
+                className="mt-6"
               >
-                <div className="backdrop-blur-xl bg-white/5 border border-white/10 rounded-2xl shadow-[0_8px_32px_rgba(0,0,0,0.35)] overflow-hidden">
+                <div className="backdrop-blur-xl bg-white/5 border border-white/10 rounded-2xl shadow-[0_8px_32px_rgba(0,0,0,0.35)] overflow-hidden max-h-[445px] overflow-y-auto">
                   {/* Table header */}
-                  <div className="hidden sm:grid grid-cols-12 gap-2 px-5 py-3 border-b border-white/10 text-xs text-slate-400 font-medium uppercase tracking-wider">
+                  <div className="hidden sm:grid grid-cols-12 gap-2 px-5 py-3 border-b border-white/10 text-xs text-slate-400 font-medium uppercase tracking-wider sticky top-0 bg-[#0b1220]/95 backdrop-blur-xl z-10">
                     <div className="col-span-1">Status</div>
                     <div className="col-span-5">Title</div>
                     <div className="col-span-2">Category</div>
@@ -439,6 +426,9 @@ const CodingPractice = () => {
                         <span className="text-sm font-medium text-white group-hover:text-violet-300 transition-colors truncate">
                           {p.title}
                         </span>
+                        {p.source === 'codeforces' && (
+                          <span className="shrink-0 px-1.5 py-0.5 rounded text-[10px] font-bold bg-blue-600/20 text-blue-400 border border-blue-500/30">CF</span>
+                        )}
                       </div>
                       <div className="sm:col-span-2 flex items-center">
                         <span className="text-xs text-slate-400 truncate">{p.category}</span>

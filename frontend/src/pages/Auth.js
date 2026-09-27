@@ -211,7 +211,7 @@ const Auth = () => {
   };
 
   return (
-    <div className="min-h-screen w-full bg-gradient-to-br from-[#0f172a] via-[#030712] to-[#020617] text-white overflow-hidden relative">
+    <div className="min-h-screen w-full bg-gradient-to-br from-[#0f172a] via-[#030712] to-[#020617] text-white overflow-x-hidden relative">
       <EnhancedAnimatedBackground />
       
       <div className="relative z-10 min-h-screen grid lg:grid-cols-2 gap-8 p-4 lg:p-8">

@@ -1,7 +1,8 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
 import { useNavigate } from 'react-router-dom';
-import { useAuth, useClerk, useUser } from '@clerk/clerk-react';
+import { useClerk, useUser } from '@clerk/clerk-react';
+import { useReadyAuth } from '../hooks/useReadyAuth';
 import { toast } from 'sonner';
 import {
   LayoutDashboard,
@@ -58,11 +59,11 @@ const TOPICS_MAP = {
 const MockInterviewSetup = () => {
   const navigate = useNavigate();
   const { user } = useUser();
-  const { getToken, isLoaded: authLoaded, isSignedIn } = useAuth();
+  const { ready, getToken } = useReadyAuth();
   const { signOut } = useClerk();
 
   const [mobileSidebarOpen, setMobileSidebarOpen] = useState(false);
-  const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
+  const [sidebarCollapsed, setSidebarCollapsed] = useState(() => localStorage.getItem("sidebarCollapsed") === "true");
   const [dbProfile, setDbProfile] = useState(null);
   const [confirmLogoutOpen, setConfirmLogoutOpen] = useState(false);
   const [logoutLoading, setLogoutLoading] = useState(false);
@@ -153,32 +154,30 @@ const MockInterviewSetup = () => {
     Boolean(difficulty) &&
     Boolean(duration);
 
-  // Fetch profile
+  // Single effect: one getToken() call, profile + history fetched in parallel
   useEffect(() => {
-    if (!authLoaded || !isSignedIn || !user) return;
+    if (!ready) return;
     (async () => {
       try {
         const token = await getToken();
         if (!token) return;
-        const res = await clerkAPI.getProfile(token);
-        setDbProfile(res.data?.user || null);
-      } catch (_) { /* ignore */ }
-    })();
-  }, [authLoaded, isSignedIn, getToken, user]);
 
-  // Fetch history
-  useEffect(() => {
-    if (!authLoaded || !isSignedIn || !user) return;
-    (async () => {
-      try {
-        const token = await getToken();
-        if (!token) return;
-        const res = await mockInterviewAPI.getHistory(token);
-        setHistory(res.data?.sessions || []);
-      } catch (_) { /* ignore */ }
-      setHistoryLoading(false);
+        const [profileRes, historyRes] = await Promise.allSettled([
+          clerkAPI.getProfile(token),
+          mockInterviewAPI.getHistory(token),
+        ]);
+
+        if (profileRes.status === 'fulfilled') {
+          setDbProfile(profileRes.value.data?.user || null);
+        }
+        if (historyRes.status === 'fulfilled') {
+          setHistory(historyRes.value.data?.sessions || []);
+        }
+      } catch (_) { /* ignore */ } finally {
+        setHistoryLoading(false);
+      }
     })();
-  }, [authLoaded, isSignedIn, getToken, user]);
+  }, [ready, getToken]);
 
   // Close role dropdown on outside click
   useEffect(() => {
@@ -238,12 +237,12 @@ const MockInterviewSetup = () => {
   };
 
   return (
-    <div className="min-h-screen w-full bg-gradient-to-br from-[#0f172a] via-[#030712] to-[#020617] text-white overflow-hidden relative">
+    <div className="min-h-screen w-full bg-gradient-to-br from-[#0f172a] via-[#030712] to-[#020617] text-white overflow-x-hidden relative">
       <EnhancedAnimatedBackground />
 
       <div className="relative z-10 min-h-screen p-4 lg:p-8">
-        <div className="mx-auto w-full max-w-7xl">
-          <div className="flex gap-4">
+        <div className="mx-auto w-full max-w-[1600px]">
+          <div className="flex gap-5">
             <Sidebar
               openMobile={mobileSidebarOpen}
               onCloseMobile={() => setMobileSidebarOpen(false)}
@@ -259,7 +258,7 @@ const MockInterviewSetup = () => {
               <div className="flex items-center gap-3">
                 <div className="flex-1 min-w-0">
                   <Navbar
-                    brand="DevPrep"
+                    brand=""
                     activeLabel="Mock Interview"
                     links={navbarLinks}
                     onNavigate={safeNavigate}
@@ -276,188 +275,191 @@ const MockInterviewSetup = () => {
                 transition={{ duration: 0.6 }}
                 className="mt-6"
               >
-                <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
+                <div className="grid grid-cols-1 lg:grid-cols-10 gap-6">
                   {/* Setup form */}
-                  <div className="lg:col-span-2">
-                    <div className="rounded-3xl border border-white/10 bg-white/5 backdrop-blur-xl shadow-[0_10px_40px_rgba(0,0,0,0.35)] p-6 sm:p-7">
+                  <div className="lg:col-span-7">
+                    <div className="rounded-2xl border border-white/10 bg-[#1e1e2d]/60 backdrop-blur-xl p-6">
                       <div className="text-sm font-semibold text-slate-200 flex items-center gap-2">
                         <Briefcase className="w-4 h-4 text-violet-400" />
                         Interview Setup
                       </div>
 
-                      {/* Interview Type */}
-                      <div className="mt-5">
-                        <label className="block text-xs text-slate-400">Interview Type</label>
-                        <div className="mt-2 grid grid-cols-3 gap-2">
-                          {[
-                            { value: 'technical', label: 'Technical' },
-                            { value: 'hr', label: 'HR' },
-                            { value: 'mixed', label: 'Mixed' }
-                          ].map((t) => {
-                            const active = interviewType === t.value;
-                            return (
-                              <button
-                                key={t.value}
-                                type="button"
-                                onClick={() => setInterviewType(t.value)}
-                                className={`h-11 rounded-xl border text-sm font-semibold transition-all duration-200 ${
-                                  active
-                                    ? 'bg-violet-600/25 border-violet-400/30 text-slate-100 shadow-[0_0_15px_rgba(139,92,246,0.15)]'
-                                    : 'bg-white/5 border-white/10 hover:border-white/20 text-slate-300'
-                                }`}
-                              >
-                                {t.label}
-                              </button>
-                            );
-                          })}
+                      {/* Scrollable Form Area */}
+                      <div className="mt-5 max-h-[500px] overflow-y-auto pr-2">
+                        {/* Interview Type */}
+                        <div>
+                          <label className="block text-xs text-slate-400">Interview Type</label>
+                          <div className="mt-2 grid grid-cols-3 gap-2">
+                            {[
+                              { value: 'technical', label: 'Technical' },
+                              { value: 'hr', label: 'HR' },
+                              { value: 'mixed', label: 'Mixed' }
+                            ].map((t) => {
+                              const active = interviewType === t.value;
+                              return (
+                                <button
+                                  key={t.value}
+                                  type="button"
+                                  onClick={() => setInterviewType(t.value)}
+                                  className={`h-11 rounded-xl border text-sm font-semibold transition-all duration-200 ${
+                                    active
+                                      ? 'bg-violet-600/20 border-violet-500 text-violet-300 shadow-[0_0_15px_rgba(139,92,246,0.15)]'
+                                      : 'bg-white/5 border-white/10 hover:border-white/20 text-slate-300'
+                                  }`}
+                                >
+                                  {t.label}
+                                </button>
+                              );
+                            })}
+                          </div>
                         </div>
-                      </div>
 
-                      {/* Role */}
-                      <div className="mt-4">
-                        <label className="block text-xs text-slate-400">Target Role</label>
-                        <div className="mt-2 relative" ref={roleDropdownRef}>
+                        {/* Role */}
+                        <div className="mt-4">
+                          <label className="block text-xs text-slate-400">Target Role</label>
+                          <div className="mt-2 relative" ref={roleDropdownRef}>
+                            <button
+                              type="button"
+                              onClick={() => setRoleDropdownOpen((v) => !v)}
+                              className="w-full h-11 px-4 rounded-xl bg-black/20 border border-white/10 hover:border-white/20 text-slate-100 inline-flex items-center justify-between gap-3 focus:outline-none focus:ring-2 focus:ring-violet-500/35"
+                            >
+                              <span className={role ? 'text-slate-100' : 'text-slate-400'}>
+                                {role || 'Select a role'}
+                              </span>
+                              <ChevronDown className={`w-4 h-4 text-slate-300 transition-transform ${roleDropdownOpen ? 'rotate-180' : ''}`} />
+                            </button>
+                            <AnimatePresence>
+                              {roleDropdownOpen && (
+                                <motion.div
+                                  initial={{ opacity: 0, y: -4 }}
+                                  animate={{ opacity: 1, y: 0 }}
+                                  exit={{ opacity: 0, y: -4 }}
+                                  transition={{ duration: 0.15 }}
+                                  className="absolute z-20 mt-2 w-full rounded-2xl border border-white/10 bg-[#0b1220]/95 backdrop-blur-xl shadow-[0_10px_40px_rgba(0,0,0,0.55)] overflow-hidden"
+                                >
+                                  <div className="max-h-64 overflow-auto py-2">
+                                    {ROLE_PRESETS.map((r) => (
+                                      <button
+                                        key={r}
+                                        type="button"
+                                        onClick={() => { setRole(r); setRoleDropdownOpen(false); }}
+                                        className={`w-full text-left px-4 py-2 text-sm transition-colors ${
+                                          r === role ? 'bg-violet-600/20 text-slate-100' : 'text-slate-200 hover:bg-white/5'
+                                        }`}
+                                      >
+                                        {r}
+                                      </button>
+                                    ))}
+                                  </div>
+                                </motion.div>
+                              )}
+                            </AnimatePresence>
+                          </div>
+                        </div>
+
+                        {/* Difficulty */}
+                        <div className="mt-4">
+                          <label className="block text-xs text-slate-400">Difficulty Level</label>
+                          <div className="mt-2 grid grid-cols-3 gap-2">
+                            {[
+                              { value: 'easy', label: 'Easy' },
+                              { value: 'medium', label: 'Medium' },
+                              { value: 'hard', label: 'Hard' }
+                            ].map((d) => {
+                              const active = difficulty === d.value;
+                              const activeColors = {
+                                easy: 'bg-emerald-500/20 border-emerald-500 text-emerald-400',
+                                medium: 'bg-yellow-500/20 border-yellow-500 text-yellow-400',
+                                hard: 'bg-red-500/20 border-red-500 text-red-400'
+                              };
+                              return (
+                                <button
+                                  key={d.value}
+                                  type="button"
+                                  onClick={() => setDifficulty(d.value)}
+                                  className={`h-11 rounded-xl border text-sm font-semibold transition-all duration-200 ${
+                                    active
+                                      ? activeColors[d.value]
+                                      : 'bg-white/5 border-white/10 hover:border-white/20 text-slate-300'
+                                  }`}
+                                >
+                                  {d.label}
+                                </button>
+                              );
+                            })}
+                          </div>
+                        </div>
+
+                        {/* Duration */}
+                        <div className="mt-4">
+                          <label className="block text-xs text-slate-400">Duration</label>
+                          <div className="mt-2 grid grid-cols-4 gap-2">
+                            {[15, 30, 45, 60].map((d) => {
+                              const active = duration === d;
+                              return (
+                                <button
+                                  key={d}
+                                  type="button"
+                                  onClick={() => setDuration(d)}
+                                  className={`h-11 rounded-xl border text-sm font-semibold transition-all duration-200 ${
+                                    active
+                                      ? 'bg-violet-600/20 border-violet-500 text-violet-300'
+                                      : 'bg-white/5 border-white/10 hover:border-white/20 text-slate-300'
+                                  }`}
+                                >
+                                  {d} min
+                                </button>
+                              );
+                            })}
+                          </div>
+                        </div>
+
+                        {/* Topics */}
+                        <div className="mt-4">
+                          <label className="block text-xs text-slate-400">
+                            Topic Preferences <span className="text-slate-500">(optional — select any)</span>
+                          </label>
+                          <div className="mt-2 flex flex-wrap gap-2">
+                            {availableTopics.map((t) => {
+                              const active = selectedTopics.includes(t);
+                              return (
+                                <button
+                                  key={t}
+                                  type="button"
+                                  onClick={() => toggleTopic(t)}
+                                  className={`px-3 h-9 rounded-xl border text-xs transition-all duration-200 ${
+                                    active
+                                      ? 'bg-violet-600/20 border-violet-500 text-violet-300'
+                                      : 'bg-white/5 border-white/10 hover:border-white/20 text-slate-300'
+                                  }`}
+                                >
+                                  {t}
+                                </button>
+                              );
+                            })}
+                          </div>
+                        </div>
+
+                        {/* Start button */}
+                        <div className="mt-6 pt-5 border-t border-white/10 flex justify-end">
                           <button
                             type="button"
-                            onClick={() => setRoleDropdownOpen((v) => !v)}
-                            className="w-full h-11 px-4 rounded-xl bg-black/20 border border-white/10 hover:border-white/20 text-slate-100 inline-flex items-center justify-between gap-3 focus:outline-none focus:ring-2 focus:ring-violet-500/35"
+                            onClick={handleStartInterview}
+                            disabled={starting || !canStart}
+                            className="w-full sm:w-auto h-11 px-8 rounded-xl bg-violet-600 hover:bg-violet-700 border border-violet-500 text-white font-semibold inline-flex items-center justify-center gap-2 disabled:opacity-50 disabled:cursor-not-allowed transition-all duration-300 shadow-[0_0_20px_rgba(139,92,246,0.2)] hover:shadow-[0_0_30px_rgba(139,92,246,0.35)]"
                           >
-                            <span className={role ? 'text-slate-100' : 'text-slate-400'}>
-                              {role || 'Select a role'}
-                            </span>
-                            <ChevronDown className={`w-4 h-4 text-slate-300 transition-transform ${roleDropdownOpen ? 'rotate-180' : ''}`} />
+                            <PlayCircle className={`w-5 h-5 ${starting ? 'animate-spin' : ''}`} />
+                            {starting ? 'Starting Interview…' : 'Start Interview'}
+                            {!starting && <ArrowRight className="w-4 h-4" />}
                           </button>
-                          <AnimatePresence>
-                            {roleDropdownOpen && (
-                              <motion.div
-                                initial={{ opacity: 0, y: -4 }}
-                                animate={{ opacity: 1, y: 0 }}
-                                exit={{ opacity: 0, y: -4 }}
-                                transition={{ duration: 0.15 }}
-                                className="absolute z-20 mt-2 w-full rounded-2xl border border-white/10 bg-[#0b1220]/95 backdrop-blur-xl shadow-[0_10px_40px_rgba(0,0,0,0.55)] overflow-hidden"
-                              >
-                                <div className="max-h-64 overflow-auto py-2">
-                                  {ROLE_PRESETS.map((r) => (
-                                    <button
-                                      key={r}
-                                      type="button"
-                                      onClick={() => { setRole(r); setRoleDropdownOpen(false); }}
-                                      className={`w-full text-left px-4 py-2 text-sm transition-colors ${
-                                        r === role ? 'bg-violet-600/20 text-slate-100' : 'text-slate-200 hover:bg-white/5'
-                                      }`}
-                                    >
-                                      {r}
-                                    </button>
-                                  ))}
-                                </div>
-                              </motion.div>
-                            )}
-                          </AnimatePresence>
                         </div>
-                      </div>
-
-                      {/* Difficulty */}
-                      <div className="mt-4">
-                        <label className="block text-xs text-slate-400">Difficulty Level</label>
-                        <div className="mt-2 grid grid-cols-3 gap-2">
-                          {[
-                            { value: 'easy', label: 'Easy', color: 'emerald' },
-                            { value: 'medium', label: 'Medium', color: 'amber' },
-                            { value: 'hard', label: 'Hard', color: 'rose' }
-                          ].map((d) => {
-                            const active = difficulty === d.value;
-                            const activeColors = {
-                              emerald: 'bg-emerald-600/20 border-emerald-400/30',
-                              amber: 'bg-amber-600/20 border-amber-400/30',
-                              rose: 'bg-rose-600/20 border-rose-400/30'
-                            };
-                            return (
-                              <button
-                                key={d.value}
-                                type="button"
-                                onClick={() => setDifficulty(d.value)}
-                                className={`h-11 rounded-xl border text-sm font-semibold transition-all duration-200 ${
-                                  active
-                                    ? `${activeColors[d.color]} text-slate-100`
-                                    : 'bg-white/5 border-white/10 hover:border-white/20 text-slate-300'
-                                }`}
-                              >
-                                {d.label}
-                              </button>
-                            );
-                          })}
-                        </div>
-                      </div>
-
-                      {/* Duration */}
-                      <div className="mt-4">
-                        <label className="block text-xs text-slate-400">Duration</label>
-                        <div className="mt-2 grid grid-cols-4 gap-2">
-                          {[15, 30, 45, 60].map((d) => {
-                            const active = duration === d;
-                            return (
-                              <button
-                                key={d}
-                                type="button"
-                                onClick={() => setDuration(d)}
-                                className={`h-11 rounded-xl border text-sm font-semibold transition-all duration-200 ${
-                                  active
-                                    ? 'bg-cyan-600/20 border-cyan-400/30 text-slate-100'
-                                    : 'bg-white/5 border-white/10 hover:border-white/20 text-slate-300'
-                                }`}
-                              >
-                                {d} min
-                              </button>
-                            );
-                          })}
-                        </div>
-                      </div>
-
-                      {/* Topics */}
-                      <div className="mt-4">
-                        <label className="block text-xs text-slate-400">
-                          Topic Preferences <span className="text-slate-500">(optional — select any)</span>
-                        </label>
-                        <div className="mt-2 flex flex-wrap gap-2">
-                          {availableTopics.map((t) => {
-                            const active = selectedTopics.includes(t);
-                            return (
-                              <button
-                                key={t}
-                                type="button"
-                                onClick={() => toggleTopic(t)}
-                                className={`px-3 h-9 rounded-xl border text-xs transition-all duration-200 ${
-                                  active
-                                    ? 'bg-cyan-600/15 border-cyan-400/30 text-slate-100'
-                                    : 'bg-white/5 border-white/10 hover:border-white/20 text-slate-300'
-                                }`}
-                              >
-                                {t}
-                              </button>
-                            );
-                          })}
-                        </div>
-                      </div>
-
-                      {/* Start button */}
-                      <div className="mt-6 pt-5 border-t border-white/10">
-                        <button
-                          type="button"
-                          onClick={handleStartInterview}
-                          disabled={starting || !canStart}
-                          className="w-full sm:w-auto h-12 px-8 rounded-xl bg-gradient-to-r from-violet-600 to-indigo-600 hover:from-violet-500 hover:to-indigo-500 border border-white/10 hover:border-white/20 text-white font-semibold inline-flex items-center justify-center gap-2 disabled:opacity-50 disabled:cursor-not-allowed transition-all duration-300 shadow-[0_0_20px_rgba(139,92,246,0.2)] hover:shadow-[0_0_30px_rgba(139,92,246,0.35)]"
-                        >
-                          <PlayCircle className={`w-5 h-5 ${starting ? 'animate-spin' : ''}`} />
-                          {starting ? 'Starting Interview…' : 'Start Interview'}
-                          {!starting && <ArrowRight className="w-4 h-4" />}
-                        </button>
                       </div>
                     </div>
                   </div>
 
                   {/* History sidebar */}
-                  <div className="lg:col-span-1">
-                    <div className="rounded-3xl border border-white/10 bg-white/5 backdrop-blur-xl shadow-[0_10px_40px_rgba(0,0,0,0.35)] p-6">
+                  <div className="lg:col-span-3">
+                    <div className="rounded-2xl border border-white/10 bg-[#1e1e2d]/60 backdrop-blur-xl p-6">
                       <div className="text-sm font-semibold text-slate-200 flex items-center gap-2">
                         <Clock className="w-4 h-4 text-cyan-400" />
                         Past Interviews
@@ -466,7 +468,17 @@ const MockInterviewSetup = () => {
                       {historyLoading ? (
                         <div className="mt-4 space-y-3">
                           {[1, 2, 3].map((i) => (
-                            <div key={i} className="h-20 rounded-xl bg-white/5 animate-pulse" />
+                            <div key={i} className="rounded-xl border border-white/10 bg-black/10 p-3">
+                              <div className="flex items-center justify-between gap-2">
+                                <div className="h-4 w-28 bg-white/10 rounded animate-pulse" />
+                                <div className="h-3 w-12 bg-white/10 rounded animate-pulse" />
+                              </div>
+                              <div className="flex items-center gap-2 mt-2">
+                                <div className="h-3 w-10 bg-white/5 rounded animate-pulse" />
+                                <div className="h-3 w-12 bg-white/5 rounded animate-pulse" />
+                              </div>
+                              <div className="h-3 w-20 bg-white/5 rounded animate-pulse mt-2.5" />
+                            </div>
                           ))}
                         </div>
                       ) : history.length === 0 ? (

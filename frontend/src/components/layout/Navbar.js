@@ -165,7 +165,7 @@ const Navbar = ({ brand = 'DevPrep', activeLabel = 'Dashboard', onOpenMobileSide
       initial={{ opacity: 0, y: -10 }}
       animate={{ opacity: 1, y: 0 }}
       transition={{ duration: 0.5 }}
-      className="backdrop-blur-xl bg-white/5 border border-white/10 rounded-2xl px-4 py-3 lg:px-6 lg:py-4 shadow-[0_8px_32px_rgba(0,0,0,0.4)]"
+      className="relative z-50 backdrop-blur-xl bg-white/5 border border-white/10 rounded-2xl px-4 py-3 lg:px-6 lg:py-4 shadow-[0_8px_32px_rgba(0,0,0,0.4)] min-h-[58px] lg:min-h-[72px] flex flex-col justify-center"
     >
       <div className="flex items-center justify-between gap-3">
         {/* ── Brand ── */}
@@ -179,10 +179,18 @@ const Navbar = ({ brand = 'DevPrep', activeLabel = 'Dashboard', onOpenMobileSide
             <Menu className="w-5 h-5 text-slate-300" />
           </button>
           <div className="min-w-0">
-            <div className="text-lg lg:text-xl font-bold bg-gradient-to-r from-cyan-400 via-violet-400 to-pink-400 bg-clip-text text-transparent truncate">
-              {brand}
-            </div>
-            <div className="text-xs lg:text-sm text-slate-400 truncate">{activeLabel}</div>
+            {brand ? (
+              <>
+                <div className="text-lg lg:text-xl font-bold bg-gradient-to-r from-cyan-400 via-violet-400 to-pink-400 bg-clip-text text-transparent truncate">
+                  {brand}
+                </div>
+                <div className="text-xs lg:text-sm text-slate-400 truncate">{activeLabel}</div>
+              </>
+            ) : (
+              <div className="text-lg lg:text-xl font-bold text-slate-100 truncate">
+                {activeLabel}
+              </div>
+            )}
           </div>
         </div>
 

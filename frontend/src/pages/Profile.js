@@ -1,7 +1,8 @@
 import { useEffect, useMemo, useState } from 'react';
 import { motion } from 'framer-motion';
 import { useNavigate } from 'react-router-dom';
-import { useAuth, useClerk, useUser } from '@clerk/clerk-react';
+import { useClerk, useUser } from '@clerk/clerk-react';
+import { useReadyAuth } from '../hooks/useReadyAuth';
 import { toast } from 'sonner';
 import {
   LayoutDashboard,
@@ -27,11 +28,11 @@ import { clerkAPI, questionsAPI, analyticsAPI } from '../services/api';
 const Profile = () => {
   const navigate = useNavigate();
   const { user } = useUser();
-  const { getToken, isLoaded: authLoaded, isSignedIn } = useAuth();
+  const { ready, getToken } = useReadyAuth();
   const { signOut } = useClerk();
 
   const [mobileSidebarOpen, setMobileSidebarOpen] = useState(false);
-  const [sidebarCollapsed, setSidebarCollapsed]   = useState(false);
+  const [sidebarCollapsed, setSidebarCollapsed] = useState(() => localStorage.getItem("sidebarCollapsed") === "true");
   const [dbProfile, setDbProfile]   = useState(null);
   const [savedStats, setSavedStats] = useState(null);
   const [interviewStats, setInterviewStats] = useState(null);
@@ -39,6 +40,7 @@ const Profile = () => {
   const [clerkToken, setClerkToken] = useState(null);
   const [confirmLogoutOpen, setConfirmLogoutOpen] = useState(false);
   const [logoutLoading, setLogoutLoading]         = useState(false);
+  const [dataLoading, setDataLoading]             = useState(true);
 
   const displayName =
     user?.fullName ||
@@ -50,7 +52,7 @@ const Profile = () => {
 
   /* ── Fetch profile + stats on mount ── */
   useEffect(() => {
-    if (!authLoaded || !isSignedIn || !user) return;
+    if (!ready) return;
 
     (async () => {
       try {
@@ -82,9 +84,11 @@ const Profile = () => {
         }
       } catch (_) {
         // Non-fatal – display shows zeros / fallbacks
+      } finally {
+        setDataLoading(false);
       }
     })();
-  }, [authLoaded, isSignedIn, getToken, user]);
+  }, [ready, getToken]);
 
   const handleLogout = async () => {
     if (logoutLoading) return;
@@ -132,12 +136,12 @@ const Profile = () => {
   ], []);
 
   return (
-    <div className="min-h-screen w-full bg-gradient-to-br from-[#0f172a] via-[#030712] to-[#020617] text-white overflow-hidden relative">
+    <div className="min-h-screen w-full bg-gradient-to-br from-[#0f172a] via-[#030712] to-[#020617] text-white overflow-x-hidden relative">
       <EnhancedAnimatedBackground />
 
       <div className="relative z-10 min-h-screen p-4 lg:p-8">
-        <div className="mx-auto w-full max-w-7xl">
-          <div className="flex gap-4">
+        <div className="mx-auto w-full max-w-[1600px]">
+          <div className="flex gap-5">
             <Sidebar
               openMobile={mobileSidebarOpen}
               onCloseMobile={() => setMobileSidebarOpen(false)}
@@ -154,7 +158,7 @@ const Profile = () => {
 
             <div className="flex-1 min-w-0">
               <Navbar
-                brand="DevPrep"
+                brand=""
                 activeLabel="Profile"
                 links={navbarLinks}
                 onOpenMobileSidebar={() => setMobileSidebarOpen(true)}
@@ -176,7 +180,9 @@ const Profile = () => {
 
                 <div className="relative p-6 sm:p-7 flex flex-col sm:flex-row sm:items-center gap-5">
                   <div className="flex items-center gap-4 min-w-0">
-                    {profileData.avatar ? (
+                    {dataLoading ? (
+                      <div className="w-14 h-14 rounded-2xl bg-white/10 animate-pulse border border-white/10" />
+                    ) : profileData.avatar ? (
                       <img
                         src={profileData.avatar}
                         alt="Avatar"
@@ -190,8 +196,17 @@ const Profile = () => {
                       </div>
                     )}
                     <div className="min-w-0">
-                      <div className="text-xl sm:text-2xl font-semibold truncate">{displayName}</div>
-                      <div className="text-sm text-slate-400 truncate">{email}</div>
+                      {dataLoading ? (
+                        <>
+                          <div className="h-8 w-48 bg-white/10 rounded-lg animate-pulse" />
+                          <div className="h-4 w-32 bg-white/10 rounded animate-pulse mt-2" />
+                        </>
+                      ) : (
+                        <>
+                          <div className="text-xl sm:text-2xl font-semibold truncate">{displayName}</div>
+                          <div className="text-sm text-slate-400 truncate">{email}</div>
+                        </>
+                      )}
                     </div>
                   </div>
 
@@ -200,7 +215,7 @@ const Profile = () => {
                       type="button"
                       whileHover={{ y: -1 }}
                       whileTap={{ scale: 0.98 }}
-                      className="px-4 py-2 rounded-2xl bg-gradient-to-r from-violet-600 to-indigo-600 border border-white/10 hover:border-white/20 font-semibold inline-flex items-center gap-2"
+                      className="px-4 py-2 rounded-xl bg-violet-600 hover:bg-violet-700 border border-violet-500 text-white font-semibold inline-flex items-center gap-2 transition-all duration-300 shadow-[0_0_15px_rgba(139,92,246,0.2)] hover:shadow-[0_0_25px_rgba(139,92,246,0.35)]"
                       onClick={() => navigate('/profile/edit')}
                     >
                       <PencilLine className="w-4 h-4" />
@@ -211,14 +226,14 @@ const Profile = () => {
               </motion.div>
 
               {/* ── Main grid ── */}
-              <div className="mt-6 grid grid-cols-1 lg:grid-cols-3 gap-6">
+              <div className="mt-6 grid grid-cols-1 lg:grid-cols-10 gap-6">
                 {/* Left column: personal info + account settings */}
-                <div className="lg:col-span-2 space-y-6">
+                <div className="lg:col-span-7 space-y-6">
                   <motion.div
                     initial={{ opacity: 0, y: 10 }}
                     animate={{ opacity: 1, y: 0 }}
                     transition={{ duration: 0.6, delay: 0.05 }}
-                    className="backdrop-blur-xl bg-white/5 border border-white/10 rounded-2xl p-5 shadow-[0_8px_32px_rgba(0,0,0,0.35)]"
+                    className="rounded-2xl border border-white/10 bg-[#1e1e2d]/60 backdrop-blur-xl p-5"
                   >
                     <div className="text-lg font-semibold">Personal information</div>
                     <div className="text-sm text-slate-400 mt-1">Your core profile details</div>
@@ -226,26 +241,30 @@ const Profile = () => {
                     <div className="mt-5 grid grid-cols-1 sm:grid-cols-2 gap-4">
                       <div className="rounded-2xl bg-white/5 border border-white/10 p-4">
                         <div className="text-xs text-slate-500">Name</div>
-                        <div className="text-sm font-semibold text-slate-100 mt-1 truncate">{displayName}</div>
+                        {dataLoading ? <div className="h-4 w-32 bg-white/10 rounded animate-pulse mt-1.5" /> : <div className="text-sm font-semibold text-slate-100 mt-1 truncate">{displayName}</div>}
                       </div>
                       <div className="rounded-2xl bg-white/5 border border-white/10 p-4">
                         <div className="text-xs text-slate-500">Email</div>
-                        <div className="text-sm font-semibold text-slate-100 mt-1 truncate">{email || '-'}</div>
+                        {dataLoading ? <div className="h-4 w-40 bg-white/10 rounded animate-pulse mt-1.5" /> : <div className="text-sm font-semibold text-slate-100 mt-1 truncate">{email || '-'}</div>}
                       </div>
                       <div className="rounded-2xl bg-white/5 border border-white/10 p-4">
                         <div className="text-xs text-slate-500">Experience level</div>
-                        <div className="text-sm font-semibold text-slate-100 mt-1">{profileData.experienceLevel}</div>
+                        {dataLoading ? <div className="h-4 w-24 bg-white/10 rounded animate-pulse mt-1.5" /> : <div className="text-sm font-semibold text-slate-100 mt-1">{profileData.experienceLevel}</div>}
                       </div>
                       <div className="rounded-2xl bg-white/5 border border-white/10 p-4">
                         <div className="text-xs text-slate-500">Target role</div>
-                        <div className="text-sm font-semibold text-slate-100 mt-1 truncate">{profileData.targetRole}</div>
+                        {dataLoading ? <div className="h-4 w-32 bg-white/10 rounded animate-pulse mt-1.5" /> : <div className="text-sm font-semibold text-slate-100 mt-1 truncate">{profileData.targetRole}</div>}
                       </div>
                     </div>
 
                     <div className="mt-4 rounded-2xl bg-white/5 border border-white/10 p-4">
                       <div className="text-xs text-slate-500">Skills</div>
                       <div className="mt-3 flex flex-wrap gap-2">
-                        {profileData.skills.map((s) => (
+                        {dataLoading ? (
+                          [1, 2, 3, 4].map((i) => (
+                            <div key={i} className="h-7 w-20 bg-white/10 rounded-xl animate-pulse" />
+                          ))
+                        ) : profileData.skills.map((s) => (
                           <div key={s} className="px-3 py-1.5 rounded-xl bg-white/5 border border-white/10 text-xs text-slate-200">
                             {s}
                           </div>
@@ -253,10 +272,17 @@ const Profile = () => {
                       </div>
                     </div>
 
-                    {profileData.bio && (
+                    {(dataLoading || profileData.bio) && (
                       <div className="mt-4 rounded-2xl bg-white/5 border border-white/10 p-4">
                         <div className="text-xs text-slate-500">About</div>
-                        <div className="mt-2 text-sm text-slate-200 whitespace-pre-wrap">{profileData.bio}</div>
+                        {dataLoading ? (
+                          <div className="mt-2 space-y-2">
+                            <div className="h-3 w-full bg-white/10 rounded animate-pulse" />
+                            <div className="h-3 w-4/5 bg-white/10 rounded animate-pulse" />
+                          </div>
+                        ) : (
+                          <div className="mt-2 text-sm text-slate-200 whitespace-pre-wrap">{profileData.bio}</div>
+                        )}
                       </div>
                     )}
                   </motion.div>
@@ -264,12 +290,12 @@ const Profile = () => {
                                   </div>
                   
                 {/* Right column: stat counters + go-to-dashboard shortcut */}
-                <div className="space-y-6">
+                <div className="lg:col-span-3 space-y-6">
                   <motion.div
                     initial={{ opacity: 0, y: 10 }}
                     animate={{ opacity: 1, y: 0 }}
                     transition={{ duration: 0.6, delay: 0.06 }}
-                    className="backdrop-blur-xl bg-white/5 border border-white/10 rounded-2xl p-5 shadow-[0_8px_32px_rgba(0,0,0,0.35)]"
+                    className="rounded-2xl border border-white/10 bg-[#1e1e2d]/60 backdrop-blur-xl p-5"
                   >
                     <div className="flex items-center justify-between gap-4">
                       <div>
@@ -284,19 +310,19 @@ const Profile = () => {
                     <div className="mt-4 grid grid-cols-2 gap-3">
                       <div className="rounded-2xl bg-white/5 border border-white/10 p-4">
                         <div className="text-xs text-slate-500">Questions saved</div>
-                        <div className="text-xl font-semibold text-slate-100 mt-1">{Number(savedStats?.totalSaved) || 0}</div>
+                        {dataLoading ? <div className="h-6 w-12 bg-white/10 rounded animate-pulse mt-1" /> : <div className="text-xl font-semibold text-slate-100 mt-1">{Number(savedStats?.totalSaved) || 0}</div>}
                       </div>
                       <div className="rounded-2xl bg-white/5 border border-white/10 p-4">
                         <div className="text-xs text-slate-500">Mock sessions</div>
-                        <div className="text-xl font-semibold text-slate-100 mt-1">{Number(profileInsights?.mock?.totalSessions) || 0}</div>
+                        {dataLoading ? <div className="h-6 w-12 bg-white/10 rounded animate-pulse mt-1" /> : <div className="text-xl font-semibold text-slate-100 mt-1">{Number(profileInsights?.mock?.totalSessions) || 0}</div>}
                       </div>
                       <div className="rounded-2xl bg-white/5 border border-white/10 p-4">
                         <div className="text-xs text-slate-500">Resume interviews</div>
-                        <div className="text-xl font-semibold text-slate-100 mt-1">{Number(profileInsights?.mock?.resumeInterviews) || 0}</div>
+                        {dataLoading ? <div className="h-6 w-12 bg-white/10 rounded animate-pulse mt-1" /> : <div className="text-xl font-semibold text-slate-100 mt-1">{Number(profileInsights?.mock?.resumeInterviews) || 0}</div>}
                       </div>
                       <div className="rounded-2xl bg-white/5 border border-white/10 p-4">
                         <div className="text-xs text-slate-500">Coding solved</div>
-                        <div className="text-xl font-semibold text-slate-100 mt-1">{Number(profileInsights?.coding?.totalSolved) || 0}</div>
+                        {dataLoading ? <div className="h-6 w-12 bg-white/10 rounded animate-pulse mt-1" /> : <div className="text-xl font-semibold text-slate-100 mt-1">{Number(profileInsights?.coding?.totalSolved) || 0}</div>}
                       </div>
                     </div>
 
@@ -359,7 +385,7 @@ const Profile = () => {
             </button>
             <button
               type="button"
-              className="px-4 py-2 rounded-xl bg-gradient-to-r from-violet-600 to-indigo-600 border border-white/10 hover:border-white/20 font-semibold disabled:opacity-60"
+              className="px-4 py-2 rounded-xl bg-violet-600 hover:bg-violet-700 border border-violet-500 text-white font-semibold disabled:opacity-50 disabled:cursor-not-allowed transition-all duration-300 shadow-[0_0_15px_rgba(139,92,246,0.2)] hover:shadow-[0_0_25px_rgba(139,92,246,0.35)]"
               onClick={handleLogout}
               disabled={logoutLoading}
             >

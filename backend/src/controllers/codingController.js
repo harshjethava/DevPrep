@@ -61,7 +61,7 @@ async function listProblems(req, res, next) {
     const [problems, total] = await Promise.all([
       CodingProblem.find(filter)
         .sort(sortObj)
-        .select('title slug difficulty category tags acceptanceRate totalSubmissions createdAt')
+        .select('title slug difficulty category tags acceptanceRate totalSubmissions createdAt source sourceId')
         .skip(skip)
         .limit(limitNum)
         .lean(),
@@ -294,21 +294,22 @@ async function submitSolution(req, res, next) {
       isDraft: false
     });
 
-    // Update problem stats
+    // Update problem stats atomically in one operation.
+    // We already know: totalSubmissions (pre-update) and overallStatus.
+    // Compute the new counts locally to derive acceptanceRate without a second DB round-trip.
+    const prevTotal = problem.totalSubmissions || 0;
+    const prevAccepted = problem.totalAccepted || 0;
+    const newTotal = prevTotal + 1;
+    const newAccepted = prevAccepted + (overallStatus === 'accepted' ? 1 : 0);
+    const newAcceptanceRate = newTotal > 0 ? Math.round((newAccepted / newTotal) * 100) : 0;
+
     await CodingProblem.findByIdAndUpdate(problem._id, {
       $inc: {
         totalSubmissions: 1,
         totalAccepted: overallStatus === 'accepted' ? 1 : 0
-      }
+      },
+      acceptanceRate: newAcceptanceRate
     });
-
-    // Recalculate acceptance rate
-    const updated = await CodingProblem.findById(problem._id).select('totalSubmissions totalAccepted').lean();
-    if (updated && updated.totalSubmissions > 0) {
-      await CodingProblem.findByIdAndUpdate(problem._id, {
-        acceptanceRate: Math.round((updated.totalAccepted / updated.totalSubmissions) * 100)
-      });
-    }
 
     // Return result — do NOT expose hidden test case inputs/expected outputs
     const safeResults = results.map((r, i) => {

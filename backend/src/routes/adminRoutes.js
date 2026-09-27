@@ -1,15 +1,17 @@
 const express = require('express');
 const { query } = require('express-validator');
 
-const { protect } = require('../middleware/auth');
+const { clerkAuthMiddleware } = require('../middleware/clerkAuth');
+const { resolveClerkUser } = require('../middleware/resolveClerkUser');
 const { adminOnly } = require('../middleware/admin');
 const { validateRequest } = require('../middleware/validateRequest');
 const { getUsers, getStats, getAnalytics } = require('../controllers/adminController');
 
 const router = express.Router();
 
-router.use(protect);
-router.use(adminOnly);
+// Admin routes use Clerk auth + MongoDB user resolution + role check.
+// Clerk users with role === 'admin' in the User model can access these endpoints.
+router.use(clerkAuthMiddleware(), resolveClerkUser, adminOnly);
 
 router.get(
   '/users',

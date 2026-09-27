@@ -43,6 +43,18 @@ const extractedDataSchema = new mongoose.Schema(
     education: {
       type: [resumeItemSchema],
       default: []
+    },
+    awards: {
+      type: [resumeItemSchema],
+      default: []
+    },
+    certifications: {
+      type: [resumeItemSchema],
+      default: []
+    },
+    competitiveProgramming: {
+      type: [resumeItemSchema],
+      default: []
     }
   },
   { _id: false }

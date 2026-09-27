@@ -3,10 +3,11 @@ const { body } = require('express-validator');
 
 const { clerkAuthMiddleware } = require('../middleware/clerkAuth');
 const { validateRequest } = require('../middleware/validateRequest');
+const { executionLimiter } = require('../middleware/executionLimiter');
 const CodingProblem = require('../models/CodingProblem');
 const Submission = require('../models/Submission');
 const User = require('../models/User');
-const { executeCode, runAgainstTestCases, compareOutput } = require('../utils/judgeService');
+const { executeCode, runAgainstTestCases } = require('../utils/judgeService');
 
 const router = express.Router();
 const clerkAuth = clerkAuthMiddleware();
@@ -26,6 +27,7 @@ async function resolveUser(req) {
 router.post(
   '/run',
   clerkAuth,
+  executionLimiter,
   [
     body('code').trim().notEmpty().withMessage('Code is required'),
     body('language').optional().isString().withMessage('Language must be a string'),
@@ -55,6 +57,7 @@ router.post(
 router.post(
   '/submit',
   clerkAuth,
+  executionLimiter,
   [
     body('problemId').trim().notEmpty().withMessage('Problem ID is required'),
     body('code').trim().notEmpty().withMessage('Code is required'),
@@ -116,21 +119,20 @@ router.post(
           isDraft: false
         });
 
-        // Update problem stats
+        // Update problem stats atomically (same fix as codingController.js)
+        const prevTotal = problem.totalSubmissions || 0;
+        const prevAccepted = problem.totalAccepted || 0;
+        const newTotal = prevTotal + 1;
+        const newAccepted = prevAccepted + (overallStatus === 'accepted' ? 1 : 0);
+        const newAcceptanceRate = newTotal > 0 ? Math.round((newAccepted / newTotal) * 100) : 0;
+
         await CodingProblem.findByIdAndUpdate(problem._id, {
           $inc: {
             totalSubmissions: 1,
             totalAccepted: overallStatus === 'accepted' ? 1 : 0
-          }
+          },
+          acceptanceRate: newAcceptanceRate
         });
-
-        const updated = await CodingProblem.findById(problem._id)
-          .select('totalSubmissions totalAccepted').lean();
-        if (updated && updated.totalSubmissions > 0) {
-          await CodingProblem.findByIdAndUpdate(problem._id, {
-            acceptanceRate: Math.round((updated.totalAccepted / updated.totalSubmissions) * 100)
-          });
-        }
       }
 
       // Return result — do NOT expose hidden test case inputs

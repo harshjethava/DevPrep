@@ -2,7 +2,8 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { motion } from 'framer-motion';
 import { useNavigate, useParams } from 'react-router-dom';
 import { toast } from 'sonner';
-import { useAuth, useUser } from '@clerk/clerk-react';
+import { useUser } from '@clerk/clerk-react';
+import { useReadyAuth } from '../hooks/useReadyAuth';
 import Editor from '@monaco-editor/react';
 import {
   Panel,
@@ -25,9 +26,10 @@ import {
   AlertTriangle,
   Loader2,
   Timer,
-  Code2
+  Code2,
+  ExternalLink
 } from 'lucide-react';
-import { codingAPI, executeAPI } from '../services/api';
+import { codingAPI } from '../services/api';
 
 const LANGUAGES = [
   { value: 'javascript', label: 'JavaScript', monacoId: 'javascript' },
@@ -38,7 +40,7 @@ const LANGUAGES = [
 ];
 
 const DEFAULT_CODE = {
-  javascript: '// Write your solution here\nfunction solve(input) {\n  // Parse input\n  const lines = input.trim().split("\\n");\n  \n  // Your code here\n  \n  return "";\n}\n\n// Read input and print output\nconst input = require("fs").readFileSync("/dev/stdin", "utf8");\nconsole.log(solve(input));\n',
+  javascript: '// Read from stdin and print output\nprocess.stdin.resume();\nprocess.stdin.setEncoding("utf8");\nlet _input = "";\nprocess.stdin.on("data", (d) => (_input += d));\nprocess.stdin.on("end", () => {\n  const lines = _input.trim().split("\\n");\n  \n  // Your solution here\n  \n  // Example: console.log(answer);\n});\n',
   python: '# Write your solution here\nimport sys\n\ndef solve():\n    input_data = sys.stdin.read().strip()\n    lines = input_data.split("\\n")\n    \n    # Your code here\n    \n    print()\n\nsolve()\n',
   cpp: '#include <bits/stdc++.h>\nusing namespace std;\n\nint main() {\n    ios_base::sync_with_stdio(false);\n    cin.tie(NULL);\n    \n    // Your code here\n    \n    return 0;\n}\n',
   java: 'import java.util.*;\nimport java.io.*;\n\npublic class Main {\n    public static void main(String[] args) {\n        Scanner sc = new Scanner(System.in);\n        \n        // Your code here\n        \n        sc.close();\n    }\n}\n',
@@ -64,7 +66,7 @@ const statusLabels = {
 const CodingChallenge = () => {
   const { id } = useParams();
   const navigate = useNavigate();
-  const { getToken, isLoaded: authLoaded, isSignedIn } = useAuth();
+  const { ready, getToken } = useReadyAuth();
   const { user } = useUser();
 
   const [problem, setProblem] = useState(null);
@@ -91,7 +93,7 @@ const CodingChallenge = () => {
 
   // Fetch problem
   useEffect(() => {
-    if (!authLoaded || !isSignedIn || !id) return;
+    if (!ready || !id) return;
     (async () => {
       setLoading(true);
       setError(null);
@@ -122,7 +124,7 @@ const CodingChallenge = () => {
         setLoading(false);
       }
     })();
-  }, [authLoaded, isSignedIn, id, getToken]);
+  }, [ready, id, getToken]);
 
   // Timer
   useEffect(() => {
@@ -152,13 +154,13 @@ const CodingChallenge = () => {
 
   // Auto-save draft
   const draftSave = useCallback(async (codeToSave) => {
-    if (!authLoaded || !isSignedIn || !id) return;
+    if (!ready || !id) return;
     try {
       const token = await getToken();
       if (!token) return;
       await codingAPI.saveDraft(token, id, { language, code: codeToSave });
     } catch (_) {}
-  }, [authLoaded, isSignedIn, id, getToken, language]);
+  }, [ready, id, getToken, language]);
 
   const handleCodeChange = (value) => {
     const newCode = value || '';
@@ -168,7 +170,7 @@ const CodingChallenge = () => {
     autoSaveTimerRef.current = setTimeout(() => draftSave(newCode), 5000);
   };
 
-  // Run code via Docker execution engine
+  // Run code against sample test cases (or custom input)
   const handleRun = async () => {
     if (running || submitting) return;
     setRunning(true);
@@ -178,38 +180,30 @@ const CodingChallenge = () => {
       const token = await getToken();
       if (!token) return;
 
-      const input = (showCustomInput && customInput.trim())
-        ? customInput
-        : (problem.testCases && problem.testCases.length > 0 ? problem.testCases[0].input : '');
+      // Use codingAPI which calls /coding/problems/:id/run
+      // Pass customInput only when the user is on the Custom Input tab
+      const payload = { language, code };
+      if (showCustomInput && customInput.trim()) {
+        payload.customInput = customInput.trim();
+      }
 
-      const res = await executeAPI.run(token, { code, language, input });
-      const d = res.data;
+      const res = await codingAPI.runCode(token, id, payload);
+      const run = res.data.run;
 
-      // Map execute API response to the results format the UI expects
-      const execStatus = d.status || (d.error ? 'runtime_error' : 'accepted');
-      const expectedOutput = (problem.testCases && problem.testCases.length > 0 && !showCustomInput)
-        ? problem.testCases[0].expectedOutput
-        : null;
-      const actualOutput = (d.output || '').trim();
-      const passed = expectedOutput !== null
-        ? (execStatus === 'accepted' && actualOutput === (expectedOutput || '').trim())
-        : null;
+      // The run endpoint returns { results[], passedCount, totalCount }
+      // For custom input runs, passedCount is null (no expected output to compare against)
+      const overallStatus =
+        run.passedCount === null
+          ? (run.results[0]?.status || 'accepted')  // custom input — show exec status
+          : run.passedCount === run.totalCount
+            ? 'accepted'
+            : (run.results.find((r) => !r.passed)?.status || 'wrong_answer');
 
       setRunResults({
-        results: [{
-          input,
-          expectedOutput: expectedOutput || null,
-          actualOutput,
-          passed,
-          status: passed === false ? 'wrong_answer' : execStatus,
-          time: d.executionTime || '0',
-          memory: '0',
-          stderr: d.error || '',
-          compileOutput: ''
-        }],
-        passedCount: passed ? 1 : (passed === false ? 0 : null),
-        totalCount: 1,
-        overallStatus: passed === false ? 'wrong_answer' : execStatus
+        results: run.results,
+        passedCount: run.passedCount,
+        totalCount:  run.totalCount,
+        overallStatus,
       });
     } catch (err) {
       toast.error(err.response?.data?.message || 'Run failed');
@@ -218,7 +212,7 @@ const CodingChallenge = () => {
     }
   };
 
-  // Submit code via Docker execution engine
+  // Submit code against all test cases (including hidden)
   const handleSubmit = async () => {
     if (running || submitting) return;
     setSubmitting(true);
@@ -228,23 +222,16 @@ const CodingChallenge = () => {
       const token = await getToken();
       if (!token) return;
 
-      const res = await executeAPI.submit(token, { problemId: id, code, language });
-      const d = res.data;
+      // Use codingAPI which calls /coding/problems/:id/submit
+      const res = await codingAPI.submitSolution(token, id, { language, code });
+      const { result, message } = res.data;
 
-      // The execute/submit endpoint returns both .result and top-level fields
-      setSubmitResult(d.result || {
-        status: (d.status || '').toLowerCase().replace(/ /g, '_'),
-        passedTests: d.passedCount,
-        totalTests: d.totalCount,
-        runtime: d.executionTime,
-        memory: '0',
-        results: d.results
-      });
+      setSubmitResult(result);
 
-      if (d.status === 'Accepted' || d.result?.status === 'accepted') {
+      if (result?.status === 'accepted') {
         toast.success('All test cases passed! 🎉');
       } else {
-        toast.error(d.message || 'Some test cases failed');
+        toast.error(message || 'Some test cases failed');
       }
     } catch (err) {
       toast.error(err.response?.data?.message || 'Submission failed');
@@ -385,10 +372,37 @@ const CodingChallenge = () => {
                   </div>
                 </div>
 
+                {/* Codeforces banner */}
+                {problem.source === 'codeforces' && problem.hints && problem.hints.length > 0 && (
+                  (() => {
+                    const cfUrl = (problem.hints[0] || '').replace('Full problem statement: ', '').trim();
+                    return cfUrl.startsWith('http') ? (
+                      <a
+                        href={cfUrl}
+                        target="_blank"
+                        rel="noopener noreferrer"
+                        className="flex items-center gap-2 px-4 py-2.5 rounded-xl bg-blue-600/15 border border-blue-500/30 text-blue-300 hover:bg-blue-600/25 hover:border-blue-400/50 transition text-sm font-medium"
+                      >
+                        <ExternalLink className="w-4 h-4 shrink-0" />
+                        View Full Problem on Codeforces
+                        <span className="ml-auto text-xs text-blue-400 opacity-70">Opens in new tab →</span>
+                      </a>
+                    ) : null;
+                  })()
+                )}
+
                 {/* Description */}
                 <div className="prose prose-invert prose-sm max-w-none">
                   <div className="text-sm text-slate-300 leading-relaxed whitespace-pre-wrap">
-                    {problem.description}
+                    {problem.source === 'codeforces'
+                      ? (
+                        // For CF problems strip the markdown URL syntax and show clean text
+                        problem.description
+                          .replace(/\[([^\]]+)\]\([^)]+\)/g, '$1')  // strip [text](url)
+                          .replace(/\*\*([^*]+)\*\*/g, '$1')         // strip **bold**
+                      )
+                      : problem.description
+                    }
                   </div>
                 </div>
 
@@ -457,11 +471,28 @@ const CodingChallenge = () => {
                     </button>
                     {hintsOpen && (
                       <div className="px-4 py-3 space-y-2 border-t border-white/10">
-                        {problem.hints.map((hint, i) => (
-                          <div key={i} className="text-sm text-slate-400">
-                            <span className="text-amber-400 font-medium">Hint {i + 1}:</span> {hint}
-                          </div>
-                        ))}
+                        {problem.hints.map((hint, i) => {
+                          // Detect if hint contains a URL
+                          const urlMatch = hint.match(/(https?:\/\/[^\s]+)/);
+                          const urlPart  = urlMatch ? urlMatch[1] : null;
+                          const textPart = urlPart ? hint.replace(urlPart, '').trim() : hint;
+                          return (
+                            <div key={i} className="text-sm text-slate-400">
+                              <span className="text-amber-400 font-medium">Hint {i + 1}:</span>{' '}
+                              {textPart}
+                              {urlPart && (
+                                <a
+                                  href={urlPart}
+                                  target="_blank"
+                                  rel="noopener noreferrer"
+                                  className="ml-1 text-blue-400 hover:text-blue-300 underline underline-offset-2"
+                                >
+                                  {urlPart.length > 60 ? urlPart.slice(0, 60) + '…' : urlPart}
+                                </a>
+                              )}
+                            </div>
+                          );
+                        })}
                       </div>
                     )}
                   </div>
@@ -526,7 +557,7 @@ const CodingChallenge = () => {
                     <button
                       onClick={handleSubmit}
                       disabled={running || submitting}
-                      className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-gradient-to-r from-violet-600 to-indigo-600 border border-white/10 text-xs text-white font-semibold hover:border-white/20 disabled:opacity-50 transition"
+                      className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-violet-600 hover:bg-violet-700 border border-violet-500 text-xs text-white font-semibold disabled:opacity-50 transition shadow-[0_0_10px_rgba(139,92,246,0.2)] hover:shadow-[0_0_15px_rgba(139,92,246,0.35)]"
                     >
                       {submitting ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Send className="w-3.5 h-3.5" />}
                       Submit
@@ -652,41 +683,44 @@ const CodingChallenge = () => {
                         {!running && !submitting && currentResult && (
                           <div className="space-y-3">
                             {/* Overall status */}
-                            <div className={`flex items-center gap-3 rounded-xl border p-3 ${
-                              (currentResult.overallStatus || currentResult.status) === 'accepted'
-                                ? 'border-emerald-500/30 bg-emerald-500/10'
-                                : 'border-red-500/30 bg-red-500/10'
-                            }`}>
-                              {(() => {
-                                const s = statusLabels[currentResult.overallStatus || currentResult.status] || statusLabels.error;
-                                const Icon = s.icon;
-                                return (
-                                  <>
-                                    <Icon className={`w-5 h-5 ${s.color}`} />
-                                    <div>
-                                      <div className={`text-sm font-semibold ${s.color}`}>{s.label}</div>
-                                      <div className="text-xs text-slate-400 mt-0.5">
-                                        {currentResult.passedCount !== null && currentResult.passedCount !== undefined
-                                          ? `${currentResult.passedCount}/${currentResult.totalCount || currentResult.totalTests} test cases passed`
-                                          : 'Custom input executed'}
-                                      </div>
+                            {(() => {
+                              const statusKey = currentResult.overallStatus || currentResult.status;
+                              const s = statusLabels[statusKey] || statusLabels.error;
+                              const Icon = s.icon;
+                              // run endpoint  → passedCount / totalCount
+                              // submit endpoint → passedTests / totalTests
+                              const passed = currentResult.passedCount ?? currentResult.passedTests ?? null;
+                              const total  = currentResult.totalCount  ?? currentResult.totalTests  ?? null;
+                              return (
+                                <div className={`flex items-center gap-3 rounded-xl border p-3 ${
+                                  statusKey === 'accepted'
+                                    ? 'border-emerald-500/30 bg-emerald-500/10'
+                                    : 'border-red-500/30 bg-red-500/10'
+                                }`}>
+                                  <Icon className={`w-5 h-5 ${s.color}`} />
+                                  <div>
+                                    <div className={`text-sm font-semibold ${s.color}`}>{s.label}</div>
+                                    <div className="text-xs text-slate-400 mt-0.5">
+                                      {passed !== null
+                                        ? `${passed}/${total} test cases passed`
+                                        : 'Custom input executed'}
                                     </div>
-                                    <div className="ml-auto flex items-center gap-3 text-xs text-slate-400">
-                                      {currentResult.runtime && (
-                                        <span className="flex items-center gap-1">
-                                          <Zap className="w-3 h-3" /> {currentResult.runtime}s
-                                        </span>
-                                      )}
-                                      {currentResult.memory && currentResult.memory !== '0' && (
-                                        <span className="flex items-center gap-1">
-                                          <HardDrive className="w-3 h-3" /> {Math.round(Number(currentResult.memory) / 1024)} KB
-                                        </span>
-                                      )}
-                                    </div>
-                                  </>
-                                );
-                              })()}
-                            </div>
+                                  </div>
+                                  <div className="ml-auto flex items-center gap-3 text-xs text-slate-400">
+                                    {currentResult.runtime && (
+                                      <span className="flex items-center gap-1">
+                                        <Zap className="w-3 h-3" /> {currentResult.runtime}s
+                                      </span>
+                                    )}
+                                    {currentResult.memory && currentResult.memory !== '0' && (
+                                      <span className="flex items-center gap-1">
+                                        <HardDrive className="w-3 h-3" /> {Math.round(Number(currentResult.memory) / 1024)} KB
+                                      </span>
+                                    )}
+                                  </div>
+                                </div>
+                              );
+                            })()}
 
                             {/* Individual results */}
                             {currentResult.results && currentResult.results.map((r, i) => (

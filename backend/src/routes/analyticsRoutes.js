@@ -9,7 +9,8 @@ const {
   getCodingStats,
   getSubmissionActivity,
   getStreakData,
-  getProfileInsights
+  getProfileInsights,
+  getRecentActivity
 } = require('../controllers/analyticsController');
 
 const router = express.Router();
@@ -29,5 +30,6 @@ router.get('/streak', ...auth, getStreakData);
 
 // Profile insights
 router.get('/profile-insights', ...auth, getProfileInsights);
+router.get('/recent-activity', ...auth, getRecentActivity);
 
 module.exports = router;

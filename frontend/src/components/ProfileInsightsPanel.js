@@ -15,8 +15,28 @@ import { analyticsAPI } from '../services/api';
 
 function normalizeLabel(v) {
   const s = String(v || '').trim();
-  return s || 'Unknown';
+  if (!s) return 'Unknown';
+  if (s.toLowerCase() === 'hr') return 'HR';
+  return s
+    .split(/[-_\s]+/)
+    .map((word) => word.charAt(0).toUpperCase() + word.slice(1).toLowerCase())
+    .join(' ');
 }
+
+const CustomLegend = ({ data, colors }) => (
+  <div className="mt-4 max-h-24 overflow-y-auto pr-2 space-y-2 scrollbar-thin scrollbar-thumb-white/10 scrollbar-track-transparent">
+    {data.map((entry, index) => (
+      <div key={index} className="flex items-center gap-2 text-xs text-slate-300 hover:bg-white/5 p-1 rounded transition-colors">
+        <div 
+          className="w-2.5 h-2.5 rounded-sm shrink-0" 
+          style={{ backgroundColor: colors[index % colors.length] }} 
+        />
+        <div className="flex-1 truncate">{entry.name}</div>
+        <div className="font-medium text-slate-100">{entry.value}</div>
+      </div>
+    ))}
+  </div>
+);
 
 function CustomTooltip({ active, payload, label }) {
   if (!active || !payload || !payload.length) return null;
@@ -66,32 +86,42 @@ const ProfileInsightsPanel = ({ clerkToken }) => {
 
   const languageData = useMemo(() => {
     const items = insights?.languageUsage || [];
-    return items
-      .map((x) => ({ name: normalizeLabel(x.language), value: Number(x.count) || 0 }))
-      .filter((x) => x.value > 0)
-      .slice(0, 8);
+    const map = {};
+    items.forEach(x => {
+      const name = normalizeLabel(x.language);
+      map[name] = (map[name] || 0) + (Number(x.count) || 0);
+    });
+    return Object.entries(map).map(([name, value]) => ({ name, value })).filter(x => x.value > 0).slice(0, 8);
   }, [insights]);
 
   const categoryData = useMemo(() => {
     const items = insights?.solvedCategories || [];
-    return items
-      .map((x) => ({ name: normalizeLabel(x.category), value: Number(x.count) || 0 }))
-      .filter((x) => x.value > 0)
-      .slice(0, 8);
+    const map = {};
+    items.forEach(x => {
+      const name = normalizeLabel(x.category);
+      map[name] = (map[name] || 0) + (Number(x.count) || 0);
+    });
+    return Object.entries(map).map(([name, value]) => ({ name, value })).filter(x => x.value > 0).slice(0, 8);
   }, [insights]);
 
   const mockTypeData = useMemo(() => {
     const items = insights?.mock?.byType || [];
-    return items
-      .map((x) => ({ name: normalizeLabel(x.type), value: Number(x.count) || 0 }))
-      .filter((x) => x.value > 0);
+    const map = {};
+    items.forEach(x => {
+      const name = normalizeLabel(x.type);
+      map[name] = (map[name] || 0) + (Number(x.count) || 0);
+    });
+    return Object.entries(map).map(([name, value]) => ({ name, value })).filter(x => x.value > 0);
   }, [insights]);
 
   const savedDifficultyData = useMemo(() => {
     const items = insights?.savedQuestions?.byDifficulty || [];
-    return items
-      .map((x) => ({ name: normalizeLabel(x.difficulty), value: Number(x.count) || 0 }))
-      .filter((x) => x.value > 0);
+    const map = {};
+    items.forEach(x => {
+      const name = normalizeLabel(x.difficulty);
+      map[name] = (map[name] || 0) + (Number(x.count) || 0);
+    });
+    return Object.entries(map).map(([name, value]) => ({ name, value })).filter(x => x.value > 0);
   }, [insights]);
 
   
@@ -124,94 +154,89 @@ const ProfileInsightsPanel = ({ clerkToken }) => {
       transition={{ duration: 0.5 }}
       className="grid grid-cols-1 lg:grid-cols-2 xl:grid-cols-4 gap-5"
     >
-      <div className="backdrop-blur-xl bg-white/5 border border-white/10 rounded-2xl p-5">
+      <div className="backdrop-blur-xl bg-white/5 border border-white/10 rounded-2xl p-5 flex flex-col">
         <div className="text-sm font-semibold text-slate-200">Languages</div>
         <div className="text-xs text-slate-500 mt-1">Submissions by language</div>
-        <div className="mt-4 h-48">
-          {languageData.length ? (
-            <ResponsiveContainer width="100%" height="100%">
-              <PieChart>
-                <Pie data={languageData} dataKey="value" nameKey="name" innerRadius={40} outerRadius={70} stroke="none">
-                  {languageData.map((_, i) => (
-                    <Cell key={i} fill={PIE_COLORS[i % PIE_COLORS.length]} />
-                  ))}
-                </Pie>
-                <Tooltip content={<CustomTooltip />} />
-              </PieChart>
-            </ResponsiveContainer>
-          ) : (
-            <div className="h-full rounded-xl bg-white/5 border border-white/10 flex items-center justify-center text-sm text-slate-500">
-              No submission data yet
+        {languageData.length ? (
+          <>
+            <div className="mt-4 h-40">
+              <ResponsiveContainer width="100%" height="100%">
+                <PieChart>
+                  <Pie data={languageData} dataKey="value" nameKey="name" innerRadius={40} outerRadius={70} stroke="none">
+                    {languageData.map((_, i) => (
+                      <Cell key={i} fill={PIE_COLORS[i % PIE_COLORS.length]} />
+                    ))}
+                  </Pie>
+                  <Tooltip content={<CustomTooltip />} />
+                </PieChart>
+              </ResponsiveContainer>
             </div>
-          )}
-        </div>
+            <CustomLegend data={languageData} colors={PIE_COLORS} />
+          </>
+        ) : (
+          <div className="mt-4 h-48 rounded-xl bg-white/5 border border-white/10 flex items-center justify-center text-sm text-slate-500">
+            No submission data yet
+          </div>
+        )}
       </div>
 
-      <div className="backdrop-blur-xl bg-white/5 border border-white/10 rounded-2xl p-5">
+      <div className="backdrop-blur-xl bg-white/5 border border-white/10 rounded-2xl p-5 flex flex-col">
         <div className="text-sm font-semibold text-slate-200">Solved Categories</div>
         <div className="text-xs text-slate-500 mt-1">Accepted problems by category</div>
-        <div className="mt-4 h-48">
-          {categoryData.length ? (
-            <ResponsiveContainer width="100%" height="100%">
-              <PieChart>
-                <Pie data={categoryData} dataKey="value" nameKey="name" innerRadius={40} outerRadius={70} stroke="none">
-                  {categoryData.map((_, i) => (
-                    <Cell key={i} fill={PIE_COLORS[i % PIE_COLORS.length]} />
-                  ))}
-                </Pie>
-                <Tooltip content={<CustomTooltip />} />
-              </PieChart>
-            </ResponsiveContainer>
-          ) : (
-            <div className="h-full rounded-xl bg-white/5 border border-white/10 flex items-center justify-center text-sm text-slate-500">
-              No solved problems yet
+        {categoryData.length ? (
+          <>
+            <div className="mt-4 h-40">
+              <ResponsiveContainer width="100%" height="100%">
+                <PieChart>
+                  <Pie data={categoryData} dataKey="value" nameKey="name" innerRadius={40} outerRadius={70} stroke="none">
+                    {categoryData.map((_, i) => (
+                      <Cell key={i} fill={PIE_COLORS[i % PIE_COLORS.length]} />
+                    ))}
+                  </Pie>
+                  <Tooltip content={<CustomTooltip />} />
+                </PieChart>
+              </ResponsiveContainer>
             </div>
-          )}
-        </div>
+            <CustomLegend data={categoryData} colors={PIE_COLORS} />
+          </>
+        ) : (
+          <div className="mt-4 h-48 rounded-xl bg-white/5 border border-white/10 flex items-center justify-center text-sm text-slate-500">
+            No solved problems yet
+          </div>
+        )}
       </div>
 
-      <div className="backdrop-blur-xl bg-white/5 border border-white/10 rounded-2xl p-5">
+      <div className="backdrop-blur-xl bg-white/5 border border-white/10 rounded-2xl p-5 flex flex-col">
         <div className="text-sm font-semibold text-slate-200">Mock Interviews</div>
-        <div className="text-xs text-slate-500 mt-1">Sessions by type</div>
-        <div className="mt-4 h-40">
+          <div className="text-xs text-slate-500 mt-1">Sessions by type</div>
           {mockTypeData.length ? (
-            <ResponsiveContainer width="100%" height="100%">
-              <BarChart data={mockTypeData} margin={{ top: 10, right: 10, bottom: 10, left: 0 }}>
-                <XAxis dataKey="name" tick={{ fill: '#94a3b8', fontSize: 11 }} axisLine={false} tickLine={false} />
-                <YAxis tick={{ fill: '#94a3b8', fontSize: 11 }} axisLine={false} tickLine={false} allowDecimals={false} />
-                <Tooltip content={<CustomTooltip />} />
-                <Bar dataKey="value" radius={[10, 10, 0, 0]}>
-                  {mockTypeData.map((_, i) => (
-                    <Cell key={i} fill={PIE_COLORS[i % PIE_COLORS.length]} />
-                  ))}
-                </Bar>
-              </BarChart>
-            </ResponsiveContainer>
+            <>
+              <div className="mt-4 h-40">
+                <ResponsiveContainer width="100%" height="100%">
+                  <BarChart data={mockTypeData} margin={{ top: 10, right: 10, bottom: 10, left: 0 }}>
+                    <XAxis dataKey="name" tick={false} axisLine={false} tickLine={false} />
+                    <YAxis tick={{ fill: '#94a3b8', fontSize: 11 }} axisLine={false} tickLine={false} allowDecimals={false} />
+                    <Tooltip content={<CustomTooltip />} cursor={{ fill: 'transparent' }} />
+                    <Bar dataKey="value" radius={[10, 10, 0, 0]}>
+                      {mockTypeData.map((_, i) => (
+                        <Cell key={i} fill={PIE_COLORS[i % PIE_COLORS.length]} />
+                      ))}
+                    </Bar>
+                  </BarChart>
+                </ResponsiveContainer>
+              </div>
+              <CustomLegend data={mockTypeData} colors={PIE_COLORS} />
+            </>
           ) : (
-            <div className="h-full rounded-xl bg-white/5 border border-white/10 flex items-center justify-center text-sm text-slate-500">
+            <div className="mt-4 h-48 rounded-xl bg-white/5 border border-white/10 flex items-center justify-center text-sm text-slate-500">
               No mock sessions yet
             </div>
           )}
-        </div>
-        <div className="mt-4 grid grid-cols-2 gap-3">
-          <div className="rounded-2xl bg-white/5 border border-white/10 p-4">
-            <div className="text-xs text-slate-500">Total sessions</div>
-            <div className="text-lg font-semibold text-slate-100 mt-1">
-              {insights?.mock?.totalSessions || 0}
-            </div>
-          </div>
-          <div className="rounded-2xl bg-white/5 border border-white/10 p-4">
-            <div className="text-xs text-slate-500">Resume interviews</div>
-            <div className="text-lg font-semibold text-slate-100 mt-1">
-              {insights?.mock?.resumeInterviews || 0}
-            </div>
-          </div>
-        </div>
       </div>
 
 
       <div className="backdrop-blur-xl bg-white/5 border border-white/10 rounded-2xl p-5 lg:col-span-2 xl:col-span-3">
-        <div className="text-sm font-semibold text-slate-200">Saved Questions</div>
+        <div className="text-sm font-semibold text-slate-200">Solved / Attempted Questions</div>
         <div className="text-xs text-slate-500 mt-1">By difficulty</div>
         <div className="mt-4 h-40">
           {savedDifficultyData.length ? (
@@ -219,13 +244,13 @@ const ProfileInsightsPanel = ({ clerkToken }) => {
               <BarChart data={savedDifficultyData} margin={{ top: 10, right: 10, bottom: 10, left: 0 }}>
                 <XAxis dataKey="name" tick={{ fill: '#94a3b8', fontSize: 11 }} axisLine={false} tickLine={false} />
                 <YAxis tick={{ fill: '#94a3b8', fontSize: 11 }} axisLine={false} tickLine={false} allowDecimals={false} />
-                <Tooltip content={<CustomTooltip />} />
+                <Tooltip content={<CustomTooltip />} cursor={{ fill: 'transparent' }} />
                 <Bar dataKey="value" radius={[10, 10, 0, 0]} fill="#a78bfa" />
               </BarChart>
             </ResponsiveContainer>
           ) : (
             <div className="h-full rounded-xl bg-white/5 border border-white/10 flex items-center justify-center text-sm text-slate-500">
-              No saved questions yet
+              No solved/attempted questions yet
             </div>
           )}
         </div>

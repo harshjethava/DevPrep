@@ -6,7 +6,8 @@ import { useNavigate } from 'react-router-dom';
 
 import { toast } from 'sonner';
 
-import { useAuth, useUser, useClerk } from '@clerk/clerk-react';
+import { useClerk, useUser } from '@clerk/clerk-react';
+import { useReadyAuth } from '../hooks/useReadyAuth';
 
 import {
 
@@ -46,15 +47,14 @@ const Dashboard = () => {
 
   const navigate = useNavigate();
 
+  const { ready, getToken } = useReadyAuth();
   const { user } = useUser();
-
-  const { getToken, isLoaded: authLoaded, isSignedIn } = useAuth();
 
   const { signOut } = useClerk();
 
   const [mobileSidebarOpen, setMobileSidebarOpen] = useState(false);
 
-  const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
+  const [sidebarCollapsed, setSidebarCollapsed] = useState(() => localStorage.getItem("sidebarCollapsed") === "true");
 
   const [confirmLogoutOpen, setConfirmLogoutOpen] = useState(false);
 
@@ -63,6 +63,7 @@ const Dashboard = () => {
   const [dbProfile, setDbProfile] = useState(null);
 
   const [savedStats, setSavedStats] = useState(null);
+  const [dataLoading, setDataLoading] = useState(true);
 
   const [interviewOverview, setInterviewOverview] = useState(null);
 
@@ -70,121 +71,44 @@ const Dashboard = () => {
 
 
 
+  const [recentActivity, setRecentActivity] = useState([]);
+
+  // Single effect: one getToken() call, all data fetched in parallel.
+  // Replaces the previous 4 separate useEffects that each called getToken()
+  // independently, causing 4 sequential token refreshes on every mount.
   useEffect(() => {
-
-    if (!authLoaded || !isSignedIn || !user) return;
-
-    if (didSyncRef.current) return;
-
-
-
-    didSyncRef.current = true;
-
-
+    if (!ready) return;
 
     (async () => {
-
       try {
-
         const token = await getToken();
-
         if (!token) return;
 
-        await clerkAPI.syncMe(token);
+        // Fire sync (once-per-mount guard) + all data fetches in parallel
+        const [, savedRes, profileRes, overviewRes, recentRes] = await Promise.allSettled([
+          // syncMe: only runs once per mount via didSyncRef
+          didSyncRef.current ? Promise.resolve() : clerkAPI.syncMe(token).finally(() => { didSyncRef.current = true; }),
+          questionsAPI.getSavedStats(token),
+          clerkAPI.getProfile(token),
+          analyticsAPI.getOverview(token),
+          analyticsAPI.getRecentActivity(token)
+        ]);
 
-      } catch (_) {
-
-        // Intentionally ignore: webhooks may still cover this; don't spam users with errors
-
-      }
-
+        if (savedRes.status === 'fulfilled') {
+          setSavedStats(savedRes.value.data || null);
+        }
+        if (profileRes.status === 'fulfilled') {
+          setDbProfile(profileRes.value.data?.user || null);
+        }
+        if (overviewRes.status === 'fulfilled') {
+          setInterviewOverview(overviewRes.value.data?.overview || null);
+        }
+        if (recentRes.status === 'fulfilled') {
+          setRecentActivity(recentRes.value.data?.activity || []);
+        }
+      } catch (_) { } finally { setDataLoading(false); }
     })();
-
-  }, [authLoaded, isSignedIn, getToken, user]);
-
-
-
-  useEffect(() => {
-
-    if (!authLoaded || !isSignedIn || !user) return;
-
-
-
-    (async () => {
-
-      try {
-
-        const token = await getToken();
-
-        if (!token) return;
-
-        const res = await questionsAPI.getSavedStats(token);
-
-        setSavedStats(res.data || null);
-
-      } catch (_) {
-
-        // Ignore
-
-      }
-
-    })();
-
-  }, [authLoaded, isSignedIn, getToken, user]);
-
-
-
-  useEffect(() => {
-
-    if (!authLoaded || !isSignedIn || !user) return;
-
-
-
-    (async () => {
-
-      try {
-
-        const token = await getToken();
-
-        if (!token) return;
-
-        const res = await clerkAPI.getProfile(token);
-
-        setDbProfile(res.data?.user || null);
-
-      } catch (_) {}
-
-    })();
-
-  }, [authLoaded, isSignedIn, getToken, user]);
-
-
-
-  // Fetch interview overview stats
-
-  useEffect(() => {
-
-    if (!authLoaded || !isSignedIn || !user) return;
-
-
-
-    (async () => {
-
-      try {
-
-        const token = await getToken();
-
-        if (!token) return;
-
-        const res = await analyticsAPI.getOverview(token);
-
-        setInterviewOverview(res.data?.overview || null);
-
-      } catch (_) {}
-
-    })();
-
-  }, [authLoaded, isSignedIn, getToken, user]);
+  }, [ready]);
 
 
 
@@ -370,47 +294,11 @@ const Dashboard = () => {
 
 
 
-  const recent = useMemo(() => {
-
-    const items = Array.isArray(savedStats?.recent) ? savedStats.recent : [];
-
-    if (!items.length) return [];
-
-    return items.map((q) => {
-
-      const topic = (Array.isArray(q.topics) && q.topics[0]) || q.topic || 'General';
-
-      const diff = q.difficulty || '';
-
-      const role = q.role || '';
-
-      return {
-
-        title: `Saved question: ${topic}`,
-
-        meta: `${role || 'Role'}${diff ? ` • ${diff}` : ''}`,
-
-        tone: 'border-emerald-500/30 bg-emerald-500/5'
-
-      };
-
-    });
-
-  }, [savedStats]);
 
 
 
-  const today = useMemo(() => [
 
-    { label: `Saved questions: ${Number(savedStats?.totalSaved) || 0} total`, Icon: Brain },
-
-    { label: `Mock interviews: ${Number(interviewOverview?.totalInterviews) || 0} sessions`, Icon: PlayCircle },
-
-    { label: `Completed: ${Number(interviewOverview?.completedInterviews) || 0} sessions`, Icon: FileText },
-
-    { label: 'Coding practice: try a new problem today', Icon: BookOpen }
-
-  ], [savedStats, interviewOverview]);
+  
 
 
 
@@ -462,7 +350,7 @@ const Dashboard = () => {
 
   return (
 
-    <div className="min-h-screen w-full bg-gradient-to-br from-[#0f172a] via-[#030712] to-[#020617] text-white overflow-hidden relative">
+    <div className="min-h-screen w-full bg-gradient-to-br from-[#0f172a] via-[#030712] to-[#020617] text-white overflow-x-hidden relative">
 
       <EnhancedAnimatedBackground />
 
@@ -470,9 +358,9 @@ const Dashboard = () => {
 
       <div className="relative z-10 min-h-screen p-4 lg:p-8">
 
-        <div className="mx-auto w-full max-w-7xl">
+        <div className="mx-auto w-full max-w-[1600px]">
 
-          <div className="flex gap-4">
+          <div className="flex gap-5">
 
             <Sidebar
 
@@ -510,7 +398,7 @@ const Dashboard = () => {
 
                   <Navbar
 
-                    brand="DevPrep"
+                    brand=""
 
                     activeLabel="Dashboard"
 
@@ -559,24 +447,28 @@ const Dashboard = () => {
                   <div className="min-w-0">
 
                     <div className="text-sm text-slate-300">Welcome back</div>
-
-                    <div className="text-2xl sm:text-3xl font-semibold mt-1 truncate">
-
-                      {displayName}
-
-                    </div>
-
+                    {dataLoading ? (
+                      <div className="mt-2 h-8 w-48 bg-white/10 rounded-lg animate-pulse" />
+                    ) : (
+                      <div className="text-2xl sm:text-3xl font-semibold mt-1 truncate">
+                        {displayName}
+                      </div>
+                    )}
                     <div className="text-sm text-slate-400 mt-2">
 
                       Pick up where you left off — or start a new session.
 
                     </div>
 
-                    <div className="text-xs text-slate-500 mt-3">
-
-                      Saved questions: <span className="font-semibold text-slate-200">{Number(savedStats?.totalSaved) || 0}</span>
-
-                    </div>
+                    {dataLoading ? (
+                      <div className="mt-3 flex items-center gap-2">
+                        <div className="h-4 w-32 bg-white/10 rounded animate-pulse" />
+                      </div>
+                    ) : (
+                      <div className="text-xs text-slate-500 mt-3">
+                        Saved questions: <span className="font-semibold text-slate-200">{Number(savedStats?.totalSaved) || 0}</span>
+                      </div>
+                    )}
 
                   </div>
 
@@ -592,7 +484,7 @@ const Dashboard = () => {
 
                       whileTap={{ scale: 0.98 }}
 
-                      className="px-4 py-2 rounded-2xl bg-gradient-to-r from-violet-600 to-indigo-600 border border-white/10 hover:border-white/20 font-semibold"
+                      className="px-4 py-2 rounded-xl bg-violet-600 hover:bg-violet-700 border border-violet-500 text-white font-semibold transition-all duration-300 shadow-[0_0_15px_rgba(139,92,246,0.2)] hover:shadow-[0_0_25px_rgba(139,92,246,0.35)]"
 
                       onClick={() => safeNavigate('/questions/generate')}
 
@@ -636,13 +528,13 @@ const Dashboard = () => {
 
                 transition={{ duration: 0.6, delay: 0.05 }}
 
-                className="mt-6 grid grid-cols-1 lg:grid-cols-3 gap-6"
+                className="mt-6 grid grid-cols-1 lg:grid-cols-10 gap-6"
 
               >
 
-                <div className="lg:col-span-2 space-y-6">
+                <div className="lg:col-span-7 space-y-6">
 
-                  <div className="backdrop-blur-xl bg-white/5 border border-white/10 rounded-2xl p-5 shadow-[0_8px_32px_rgba(0,0,0,0.35)]">
+                  <div className="rounded-2xl border border-white/10 bg-[#1e1e2d]/60 backdrop-blur-xl p-5">
 
                     <div className="flex items-center justify-between">
 
@@ -728,7 +620,7 @@ const Dashboard = () => {
 
 
 
-                  <div className="backdrop-blur-xl bg-white/5 border border-white/10 rounded-2xl p-5 shadow-[0_8px_32px_rgba(0,0,0,0.35)]">
+                  <div className="rounded-2xl border border-white/10 bg-[#1e1e2d]/60 backdrop-blur-xl p-5">
 
                     <div className="flex items-center justify-between">
 
@@ -816,116 +708,63 @@ const Dashboard = () => {
 
 
 
-                <div className="lg:col-span-1 space-y-6">
-
-                  <div className="backdrop-blur-xl bg-white/5 border border-white/10 rounded-2xl p-5 shadow-[0_8px_32px_rgba(0,0,0,0.35)]">
-
-                    <div className="flex items-center justify-between">
-
-                      <div>
-
-                        <div className="text-lg font-semibold">Today</div>
-
-                        <div className="text-sm text-slate-400 mt-1">Your focused plan</div>
-
-                      </div>
-
-                      <div className="text-xs text-slate-500">{today.length} items</div>
-
-                    </div>
-
-
-
-                    <div className="mt-4 space-y-3">
-
-                      {today.map(({ label, Icon }) => (
-
-                        <motion.div
-
-                          key={label}
-
-                          initial={{ opacity: 0, x: 6 }}
-
-                          animate={{ opacity: 1, x: 0 }}
-
-                          transition={{ duration: 0.35 }}
-
-                          whileHover={{ x: 2 }}
-
-                          className="flex items-center gap-3 rounded-xl bg-white/5 border border-white/10 hover:border-white/20 px-3 py-2"
-
-                        >
-
-                          <div className="w-9 h-9 rounded-lg bg-gradient-to-r from-violet-600/25 to-indigo-600/10 border border-white/10 flex items-center justify-center">
-
-                            <Icon className="w-4 h-4 text-violet-200" />
-
-                          </div>
-
-                          <div className="text-sm text-slate-200">{label}</div>
-
-                        </motion.div>
-
-                      ))}
-
-                    </div>
-
-                  </div>
-
-
-
-                  <div className="backdrop-blur-xl bg-white/5 border border-white/10 rounded-2xl p-5 shadow-[0_8px_32px_rgba(0,0,0,0.35)]">
-
-                    <div className="flex items-center justify-between">
-
-                      <div>
-
-                        <div className="text-lg font-semibold">Recent Activity</div>
-
-                        <div className="text-sm text-slate-400 mt-1">Last saved items</div>
-
-                      </div>
-
-                    </div>
-
-
-
-                    <div className="mt-4 space-y-3">
-
-                      {recent.length ? (
-
-                        recent.map((item) => (
-
-                          <div
-
-                            key={item.title}
-
-                            className={`rounded-2xl border px-4 py-3 ${item.tone}`}
-
-                          >
-
-                            <div className="text-sm font-medium text-slate-100">{item.title}</div>
-
-                            <div className="text-xs text-slate-400 mt-1">{item.meta}</div>
-
-                          </div>
-
-                        ))
-
-                      ) : (
-
-                        <div className="rounded-2xl border border-dashed border-white/10 bg-black/10 px-4 py-4 text-sm text-slate-400">
-
-                          No saved questions yet.
-
+                <div className="lg:col-span-3 relative h-[500px] lg:h-auto">
+                  <div className="lg:absolute inset-0 h-full">
+                    <div className="rounded-2xl border border-white/10 bg-[#1e1e2d]/60 backdrop-blur-xl p-5 h-full flex flex-col">
+                      <div className="flex items-center justify-between flex-shrink-0">
+                        <div>
+                          <div className="text-lg font-semibold">Recent Activity</div>
+                          <div className="text-sm text-slate-400 mt-1">Last saved items</div>
                         </div>
+                      </div>
 
+                      <div className="mt-4 space-y-3 flex-1 overflow-y-auto pr-1">
+                      {dataLoading ? (
+                        [1, 2, 3, 4, 5, 6].map((i) => (
+                          <div key={i} className="rounded-2xl border border-white/5 bg-white/5 px-4 py-3">
+                            <div className="h-4 w-3/4 bg-white/10 rounded animate-pulse" style={{ animationDelay: `${i * 100}ms` }} />
+                            <div className="h-3 w-1/2 bg-white/5 rounded animate-pulse mt-2" style={{ animationDelay: `${i * 100}ms` }} />
+                          </div>
+                        ))
+                      ) : recentActivity.length ? (
+                        recentActivity.map((item, i) => {
+                          let Icon = Brain;
+                          let iconClass = 'text-emerald-200';
+                          let bgClass = 'from-emerald-600/25 to-teal-600/10';
+                          if (item.type === 'mock') {
+                            Icon = PlayCircle; iconClass = 'text-violet-200'; bgClass = 'from-violet-600/25 to-indigo-600/10';
+                          } else if (item.type === 'resume') {
+                            Icon = FileText; iconClass = 'text-cyan-200'; bgClass = 'from-cyan-600/25 to-blue-600/10';
+                          } else if (item.type === 'coding') {
+                            Icon = Code2; iconClass = 'text-amber-200'; bgClass = 'from-amber-600/25 to-orange-600/10';
+                          }
+                          return (
+                            <motion.div
+                              key={item.title + i}
+                              initial={{ opacity: 0, x: 6 }}
+                              animate={{ opacity: 1, x: 0 }}
+                              transition={{ duration: 0.35, delay: i * 0.05 }}
+                              whileHover={{ x: 2 }}
+                              className="flex items-center gap-3 rounded-xl bg-white/5 border border-white/10 hover:border-white/20 px-3 py-2 shrink-0"
+                            >
+                              <div className={`w-9 h-9 rounded-lg bg-gradient-to-r ${bgClass} border border-white/10 flex items-center justify-center shrink-0`}>
+                                <Icon className={`w-4 h-4 ${iconClass}`} />
+                              </div>
+                              <div className="min-w-0">
+                                <div className="text-sm font-medium text-slate-200 truncate">{item.title}</div>
+                                <div className="text-xs text-slate-400 mt-0.5 truncate">{item.meta}</div>
+                              </div>
+                            </motion.div>
+                          );
+                        })
+                      ) : (
+                        <div className="rounded-2xl border border-dashed border-white/10 bg-black/10 px-4 py-4 text-sm text-slate-400 shrink-0">
+                          No recent activity yet.
+                        </div>
                       )}
-
                     </div>
-
                   </div>
-
+                </div>
                 </div>
 
               </motion.div>
@@ -974,7 +813,7 @@ const Dashboard = () => {
 
               type="button"
 
-              className="px-4 py-2 rounded-xl bg-gradient-to-r from-violet-600 to-indigo-600 border border-white/10 hover:border-white/20 font-semibold"
+              className="px-4 py-2 rounded-xl bg-violet-600 hover:bg-violet-700 border border-violet-500 text-white font-semibold transition-all duration-300 shadow-[0_0_15px_rgba(139,92,246,0.2)] hover:shadow-[0_0_25px_rgba(139,92,246,0.35)]"
 
               onClick={handleLogout}
 

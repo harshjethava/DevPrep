@@ -15,9 +15,12 @@ const TIMEOUT_MS = 5000; // 5 second execution timeout
 
 const code = process.env.CODE || '';
 const lang = (process.env.LANG || 'python').toLowerCase().trim();
-const input = process.env.INPUT || '';;
+const input = process.env.INPUT || '';
 
-const WORK_DIR = path.join(__dirname, '.work');
+// Per-execution working directory is passed from the parent (runInDocker.js)
+// as a UUID-keyed path to prevent concurrent runs from colliding.
+// Falls back to the shared .work directory for backwards compatibility.
+const WORK_DIR = process.env.WORK_DIR || path.join(__dirname, '.work');
 
 // ─── Path sanitizer ───────────────────────────────────────────────────────────
 // Strips absolute server paths from error messages so users NEVER see

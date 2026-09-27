@@ -24,7 +24,7 @@ const PublicProfile = () => {
   const navigate = useNavigate();
 
   const [mobileSidebarOpen, setMobileSidebarOpen] = useState(false);
-  const [sidebarCollapsed, setSidebarCollapsed]   = useState(false);
+  const [sidebarCollapsed, setSidebarCollapsed] = useState(() => localStorage.getItem("sidebarCollapsed") === "true");
   const [profile, setProfile]   = useState(null);
   const [stats, setStats]       = useState(null);
   const [loading, setLoading]   = useState(true);
@@ -73,12 +73,12 @@ const PublicProfile = () => {
   ], []);
 
   return (
-    <div className="min-h-screen w-full bg-gradient-to-br from-[#0f172a] via-[#030712] to-[#020617] text-white overflow-hidden relative">
+    <div className="min-h-screen w-full bg-gradient-to-br from-[#0f172a] via-[#030712] to-[#020617] text-white overflow-x-hidden relative">
       <EnhancedAnimatedBackground />
 
       <div className="relative z-10 min-h-screen p-4 lg:p-8">
-        <div className="mx-auto w-full max-w-7xl">
-          <div className="flex gap-4">
+        <div className="mx-auto w-full max-w-[1600px]">
+          <div className="flex gap-5">
             <Sidebar
               openMobile={mobileSidebarOpen}
               onCloseMobile={() => setMobileSidebarOpen(false)}
@@ -91,7 +91,7 @@ const PublicProfile = () => {
 
             <div className="flex-1 min-w-0">
               <Navbar
-                brand="DevPrep"
+                brand=""
                 activeLabel={profile ? `@${profile.username}` : 'User Profile'}
                 links={navbarLinks}
                 onOpenMobileSidebar={() => setMobileSidebarOpen(true)}
@@ -186,16 +186,16 @@ const PublicProfile = () => {
                     <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
                       {/* Left: About + Skills */}
                       <div className="lg:col-span-2 space-y-5">
-                        {profile.bio && (
-                          <div className="backdrop-blur-xl bg-white/5 border border-white/10 rounded-2xl p-5">
-                            <div className="text-sm font-semibold text-slate-200 mb-2">About</div>
-                            <p className="text-sm text-slate-400 whitespace-pre-wrap">{profile.bio}</p>
-                          </div>
-                        )}
+                        <div className="backdrop-blur-xl bg-[#1e1e2d]/60 border border-white/10 rounded-2xl p-5">
+                          <div className="text-sm font-semibold text-slate-200 mb-2">About</div>
+                          <p className={`text-sm whitespace-pre-wrap ${profile.bio ? 'text-slate-400' : 'text-slate-500 italic'}`}>
+                            {profile.bio || 'No bio provided.'}
+                          </p>
+                        </div>
 
-                        {profile.skills?.length > 0 && (
-                          <div className="backdrop-blur-xl bg-white/5 border border-white/10 rounded-2xl p-5">
-                            <div className="text-sm font-semibold text-slate-200 mb-3">Skills</div>
+                        <div className="backdrop-blur-xl bg-[#1e1e2d]/60 border border-white/10 rounded-2xl p-5">
+                          <div className="text-sm font-semibold text-slate-200 mb-3">Skills</div>
+                          {profile.skills?.length > 0 ? (
                             <div className="flex flex-wrap gap-2">
                               {profile.skills.map((s) => (
                                 <span
@@ -206,16 +206,16 @@ const PublicProfile = () => {
                                 </span>
                               ))}
                             </div>
-                          </div>
-                        )}
+                          ) : (
+                            <p className="text-sm text-slate-500 italic">No skills added yet.</p>
+                          )}
+                        </div>
 
-                        {/* Analytics */}
-                        <PublicProfileAnalytics username={profile.username || username} />
                       </div>
 
                       {/* Right: Stats */}
                       <div className="space-y-5">
-                        <div className="backdrop-blur-xl bg-white/5 border border-white/10 rounded-2xl p-5">
+                        <div className="backdrop-blur-xl bg-[#1e1e2d]/60 border border-white/10 rounded-2xl p-5">
                           <div className="text-sm font-semibold text-slate-200 mb-4">Statistics</div>
                           <div className="space-y-3">
                             <div className="flex items-center justify-between rounded-xl bg-white/5 border border-white/10 px-4 py-3">
@@ -250,6 +250,14 @@ const PublicProfile = () => {
                           </div>
                         </div>
                       </div>
+                    </div>
+                    
+                    <div className="mt-6">
+                      <div className="flex items-center gap-3 mb-4">
+                        <div className="text-lg font-semibold">Coding Analytics</div>
+                        <div className="text-xs text-slate-500">LeetCode-style</div>
+                      </div>
+                      <PublicProfileAnalytics username={profile.username || username} />
                     </div>
                   </motion.div>
                 )}

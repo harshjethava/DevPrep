@@ -3,6 +3,7 @@ const { body } = require('express-validator');
 
 const { clerkAuthMiddleware } = require('../middleware/clerkAuth');
 const { validateRequest } = require('../middleware/validateRequest');
+const { questionGenerationLimiter } = require('../middleware/rateLimiters');
 const { generateQuestions, saveQuestions, getSavedStats } = require('../controllers/questionController');
 
 const router = express.Router();
@@ -10,6 +11,7 @@ const router = express.Router();
 router.post(
   '/generate',
   clerkAuthMiddleware(),
+  questionGenerationLimiter,
   [
     body('role').optional().isString().withMessage('Role must be a string'),
     body('difficulty').optional().isString().withMessage('Difficulty must be a string'),

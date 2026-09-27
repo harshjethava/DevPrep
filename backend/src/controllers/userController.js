@@ -1,6 +1,6 @@
 const mongoose = require('mongoose');
 const User = require('../models/User');
-const InterviewSession = require('../models/InterviewSession');
+const MockInterviewSession = require('../models/MockInterviewSession');
 const Submission = require('../models/Submission');
 const CodingProblem = require('../models/CodingProblem');
 
@@ -68,10 +68,10 @@ async function getStats(req, res, next) {
   try {
     const userId = req.user._id;
 
-    const totalInterviews = await InterviewSession.countDocuments({ userId });
-    const completedInterviews = await InterviewSession.countDocuments({ userId, status: 'completed' });
+    const totalInterviews = await MockInterviewSession.countDocuments({ userId });
+    const completedInterviews = await MockInterviewSession.countDocuments({ userId, status: 'completed' });
 
-    const agg = await InterviewSession.aggregate([
+    const agg = await MockInterviewSession.aggregate([
       { $match: { userId, status: 'completed', overallScore: { $ne: null } } },
       { $group: { _id: null, avgScore: { $avg: '$overallScore' } } }
     ]);
@@ -143,15 +143,17 @@ async function getPublicProfile(req, res, next) {
 
     // Grab basic coding stats for public display
     const matchUser = user.clerkUserId
-      ? { clerkUserId: user.clerkUserId }
+      ? { $or: [{ clerkUserId: user.clerkUserId }, { userId: user._id }] }
       : { userId: user._id };
 
     const [solvedCount, totalInterviews] = await Promise.all([
       Submission.distinct('problemId', { ...matchUser, status: 'accepted', isDraft: false }).then(
         (ids) => ids.length
       ),
-      InterviewSession.countDocuments({ userId: user._id, status: 'completed' })
+      MockInterviewSession.countDocuments({ ...matchUser, status: 'completed' })
     ]);
+    console.log('getPublicProfile matchUser:', JSON.stringify(matchUser));
+    console.log('getPublicProfile totalInterviews count:', totalInterviews);
 
     res.status(200).json({
       user: {
@@ -182,119 +184,91 @@ async function getPublicAnalytics(req, res, next) {
   try {
     const { username } = req.params;
 
-    console.log('getPublicAnalytics - username:', username);
-
     const user = await User.findOne({
       $or: [{ username }, { name: username }]
     })
       .select('_id clerkUserId')
       .lean();
 
-    console.log('getPublicAnalytics - found user:', user);
-
     if (!user) {
       return res.status(404).json({ message: 'User not found' });
     }
 
-    // Match field: prefer clerkUserId if set, otherwise userId
     const matchUser = user.clerkUserId
       ? { $or: [{ clerkUserId: user.clerkUserId }, { userId: new mongoose.Types.ObjectId(user._id) }] }
       : { userId: new mongoose.Types.ObjectId(user._id) };
 
-    // Coding stats - First check if user has any submissions
-    const allSubmissions = await Submission.find(matchUser).lean();
-    console.log('getPublicAnalytics - Total submissions found:', allSubmissions.length);
-    
-    const acceptedSubmissions = await Submission.find({ ...matchUser, status: 'accepted', isDraft: false }).lean();
-    console.log('getPublicAnalytics - Accepted submissions found:', acceptedSubmissions.length);
-    
-    // First, let's get all accepted submissions and check their structure
-    const acceptedSubmissionsPopulated = await Submission.find({ ...matchUser, status: 'accepted', isDraft: false })
-      .populate('problemId')
-      .lean();
-    
-    console.log('getPublicAnalytics - Accepted submissions with problem populated:', acceptedSubmissionsPopulated.length);
-    acceptedSubmissionsPopulated.forEach((sub, i) => {
-      console.log(`Accepted Submission ${i+1}:`, {
-        _id: sub._id,
-        problemId: sub.problemId,
-        problem: sub.problemId,
-        status: sub.status,
-        isDraft: sub.isDraft
-      });
-    });
-    
-    // Now try the aggregation with a simpler approach
-    const solvedAgg = await Submission.aggregate([
-      { $match: { ...matchUser, status: 'accepted', isDraft: false } },
-      { $group: { _id: '$problemId' } },
-      {
-        $lookup: {
-          from: 'codingproblems',
-          localField: '_id',
-          foreignField: '_id',
-          as: 'problem'
-        }
-      },
-      { $unwind: '$problem' },
-      { $group: { _id: '$problem.difficulty', count: { $sum: 1 } } }
-    ]);
+    const since = new Date();
+    since.setFullYear(since.getFullYear() - 1);
 
-    const totalSubAgg = await Submission.aggregate([
-      { $match: { ...matchUser, isDraft: false } },
-      {
-        $group: {
-          _id: null,
-          total: { $sum: 1 },
-          accepted: {
-            $sum: { $cond: [{ $eq: ['$status', 'accepted'] }, 1, 0] }
+    // Run all DB queries in parallel — single round-trip per query, no redundant fetches.
+    const [solvedAgg, totalSubAgg, totalProblemsAgg, activity, days] = await Promise.all([
+      // Unique problems solved, grouped by difficulty
+      Submission.aggregate([
+        { $match: { ...matchUser, status: 'accepted', isDraft: false } },
+        { $group: { _id: '$problemId' } },
+        {
+          $lookup: {
+            from: 'codingproblems',
+            localField: '_id',
+            foreignField: '_id',
+            as: 'problem'
+          }
+        },
+        { $unwind: '$problem' },
+        { $group: { _id: '$problem.difficulty', count: { $sum: 1 } } }
+      ]),
+
+      // Total vs accepted submissions (for acceptance rate)
+      Submission.aggregate([
+        { $match: { ...matchUser, isDraft: false } },
+        {
+          $group: {
+            _id: null,
+            total: { $sum: 1 },
+            accepted: { $sum: { $cond: [{ $eq: ['$status', 'accepted'] }, 1, 0] } }
           }
         }
-      }
+      ]),
+
+      // Total problems in DB per difficulty
+      CodingProblem.aggregate([
+        { $group: { _id: '$difficulty', count: { $sum: 1 } } }
+      ]),
+
+      // Submission activity heatmap (last 365 days)
+      Submission.aggregate([
+        { $match: { ...matchUser, isDraft: false, createdAt: { $gte: since } } },
+        { $group: { _id: { $dateToString: { format: '%Y-%m-%d', date: '$createdAt' } }, count: { $sum: 1 } } },
+        { $project: { _id: 0, date: '$_id', count: 1 } },
+        { $sort: { date: 1 } }
+      ]),
+
+      // Unique active days (for streak calculation)
+      Submission.aggregate([
+        { $match: { ...matchUser, isDraft: false } },
+        { $group: { _id: { $dateToString: { format: '%Y-%m-%d', date: '$createdAt' } } } },
+        { $sort: { _id: 1 } }
+      ])
     ]);
 
-    const totalProblemsAgg = await CodingProblem.aggregate([
-      { $group: { _id: '$difficulty', count: { $sum: 1 } } }
-    ]);
-
+    // Build difficulty maps
     const solvedMap = { easy: 0, medium: 0, hard: 0 };
-    console.log('getPublicAnalytics - solvedAgg:', solvedAgg);
     solvedAgg.forEach(({ _id, count }) => {
       const k = typeof _id === 'string' ? _id.toLowerCase() : _id;
       if (k in solvedMap) solvedMap[k] = count;
     });
 
     const totalMap = { easy: 0, medium: 0, hard: 0 };
-    console.log('getPublicAnalytics - totalProblemsAgg:', totalProblemsAgg);
     totalProblemsAgg.forEach(({ _id, count }) => {
       const k = typeof _id === 'string' ? _id.toLowerCase() : _id;
       if (k in totalMap) totalMap[k] = count;
     });
 
-    console.log('getPublicAnalytics - solvedMap:', solvedMap);
-    console.log('getPublicAnalytics - totalMap:', totalMap);
-
     const subStats = totalSubAgg[0] || { total: 0, accepted: 0 };
     const acceptanceRate = subStats.total > 0 ? Math.round((subStats.accepted / subStats.total) * 100) : 0;
 
-    // Submission activity (last 365 days)
-    const since = new Date();
-    since.setFullYear(since.getFullYear() - 1);
-
-    const activity = await Submission.aggregate([
-      { $match: { ...matchUser, isDraft: false, createdAt: { $gte: since } } },
-      { $group: { _id: { $dateToString: { format: '%Y-%m-%d', date: '$createdAt' } }, count: { $sum: 1 } } },
-      { $project: { _id: 0, date: '$_id', count: 1 } },
-      { $sort: { date: 1 } }
-    ]);
-
-    // Streak
-    const days = await Submission.aggregate([
-      { $match: { ...matchUser, isDraft: false } },
-      { $group: { _id: { $dateToString: { format: '%Y-%m-%d', date: '$createdAt' } } } },
-      { $sort: { _id: 1 } }
-    ]);
-
+    // Calculate streak from unique active days
     const dateStrings = days.map((d) => d._id);
     let currentStreak = 0;
     let longestStreak = 0;
@@ -334,7 +308,7 @@ async function getPublicAnalytics(req, res, next) {
       }
     }
 
-    const responseData = {
+    res.status(200).json({
       codingStats: {
         totalSolved: solvedMap.easy + solvedMap.medium + solvedMap.hard,
         totalProblems: totalMap.easy + totalMap.medium + totalMap.hard,
@@ -350,11 +324,7 @@ async function getPublicAnalytics(req, res, next) {
       },
       activity,
       streak: { currentStreak, longestStreak, lastActiveDate }
-    };
-
-    console.log('getPublicAnalytics - Final response data:', responseData);
-
-    res.status(200).json(responseData);
+    });
   } catch (err) {
     next(err);
   }

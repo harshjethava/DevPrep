@@ -2,12 +2,6 @@ import axios from 'axios';
 
 const API_BASE = process.env.REACT_APP_API_BASE || 'http://localhost:5000/api';
 
-let unauthorizedHandler = null;
-
-export function setUnauthorizedHandler(handler) {
-  unauthorizedHandler = handler;
-}
-
 const api = axios.create({
   baseURL: API_BASE,
   headers: { 'Content-Type': 'application/json' }
@@ -19,7 +13,9 @@ api.interceptors.request.use(
     const hasAuthHeader = Boolean(
       config.headers && (config.headers.Authorization || config.headers.authorization)
     );
-    if (token && !hasAuthHeader) {
+    // Only attach the legacy JWT token if it is a real non-empty string.
+    // Prevents "Authorization: Bearer null" when no JWT is stored.
+    if (token && token !== 'null' && token !== 'undefined' && !hasAuthHeader) {
       config.headers.Authorization = `Bearer ${token}`;
     }
     return config;
@@ -113,14 +109,6 @@ export const codingAPI = {
     api.get(`/coding/problems/${id}/status`, { headers: { Authorization: `Bearer ${clerkToken}` } })
 };
 
-/* ── Execute ── */
-export const executeAPI = {
-  run: (clerkToken, payload) =>
-    api.post('/execute/run', payload, { headers: { Authorization: `Bearer ${clerkToken}` } }),
-  submit: (clerkToken, payload) =>
-    api.post('/execute/submit', payload, { headers: { Authorization: `Bearer ${clerkToken}` } })
-};
-
 /* ── Analytics ── */
 export const analyticsAPI = {
   getOverview: (clerkToken) =>
@@ -136,7 +124,9 @@ export const analyticsAPI = {
   getStreak: (clerkToken) =>
     api.get('/analytics/streak', { headers: { Authorization: `Bearer ${clerkToken}` } }),
   getProfileInsights: (clerkToken) =>
-    api.get('/analytics/profile-insights', { headers: { Authorization: `Bearer ${clerkToken}` } })
+    api.get('/analytics/profile-insights', { headers: { Authorization: `Bearer ${clerkToken}` } }),
+  getRecentActivity: (clerkToken) =>
+    api.get('/analytics/recent-activity', { headers: { Authorization: `Bearer ${clerkToken}` } })
 };
 
 /* ── Users (public search) ── */
@@ -145,5 +135,3 @@ export const userAPI = {
   getPublicProfile: (username) => api.get(`/users/public/${username}`),
   getPublicAnalytics: (username) => api.get(`/users/public/${username}/analytics`)
 };
-
-export default api;

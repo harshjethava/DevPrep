@@ -1,7 +1,8 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
 import { useNavigate } from 'react-router-dom';
-import { useAuth, useClerk, useUser } from '@clerk/clerk-react';
+import { useClerk, useUser } from '@clerk/clerk-react';
+import { useReadyAuth } from '../hooks/useReadyAuth';
 import { toast } from 'sonner';
 import jsPDF from 'jspdf';
 import {
@@ -56,9 +57,9 @@ const FALLBACK_TOPICS = [
 ];
 
 const DIFFICULTY_CONFIG = [
-  { value: 'Easy', color: 'emerald', activeBg: 'bg-emerald-600/20 border-emerald-400/30', activeText: 'text-emerald-300' },
-  { value: 'Medium', color: 'amber', activeBg: 'bg-amber-600/20 border-amber-400/30', activeText: 'text-amber-300' },
-  { value: 'Hard', color: 'rose', activeBg: 'bg-rose-600/20 border-rose-400/30', activeText: 'text-rose-300' }
+  { value: 'Easy', color: 'emerald', activeBg: 'bg-emerald-500/20 border-emerald-500', activeText: 'text-emerald-400' },
+  { value: 'Medium', color: 'yellow', activeBg: 'bg-yellow-500/20 border-yellow-500', activeText: 'text-yellow-400' },
+  { value: 'Hard', color: 'red', activeBg: 'bg-red-500/20 border-red-500', activeText: 'text-red-400' }
 ];
 
 /* ── pdf generation ───────────────────────────────────────────────────────── */
@@ -151,12 +152,12 @@ function formatDate(d) {
 const QuestionGenerator = () => {
   const navigate = useNavigate();
   const { user } = useUser();
-  const { getToken, isLoaded: authLoaded, isSignedIn } = useAuth();
+  const { ready, getToken } = useReadyAuth();
   const { signOut } = useClerk();
 
   /* ── layout / chrome state ──────────────────────────────────────────────── */
   const [mobileSidebarOpen, setMobileSidebarOpen] = useState(false);
-  const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
+  const [sidebarCollapsed, setSidebarCollapsed] = useState(() => localStorage.getItem("sidebarCollapsed") === "true");
   const [dbProfile, setDbProfile] = useState(null);
   const [confirmLogoutOpen, setConfirmLogoutOpen] = useState(false);
   const [logoutLoading, setLogoutLoading] = useState(false);
@@ -248,7 +249,7 @@ const QuestionGenerator = () => {
 
   // Fetch profile
   useEffect(() => {
-    if (!authLoaded || !isSignedIn || !user) return;
+    if (!ready) return;
     (async () => {
       try {
         const token = await getToken();
@@ -257,11 +258,11 @@ const QuestionGenerator = () => {
         setDbProfile(res.data?.user || null);
       } catch (_) { /* ignore */ }
     })();
-  }, [authLoaded, getToken, user]);
+  }, [ready, getToken]);
 
   // Fetch saved stats
   useEffect(() => {
-    if (!authLoaded || !isSignedIn || !user) return;
+    if (!ready) return;
     (async () => {
       try {
         const token = await getToken();
@@ -271,7 +272,7 @@ const QuestionGenerator = () => {
       } catch (_) { /* ignore */ }
       setStatsLoading(false);
     })();
-  }, [authLoaded, getToken, user]);
+  }, [ready, getToken]);
 
   // Reset topics when role changes
   useEffect(() => {
@@ -320,7 +321,7 @@ const QuestionGenerator = () => {
     const normalizedCount = allowedCounts.has(requested) ? requested : 10;
     const payload = { role: role.trim(), difficulty, topics, count: normalizedCount };
 
-    if (!authLoaded || !isSignedIn) { toast.info('Loading session… try again'); return; }
+    if (!ready) { toast.info('Loading session… try again'); return; }
     const token = await getToken();
     if (!token) { toast.error('Not authenticated'); return; }
 
@@ -335,10 +336,25 @@ const QuestionGenerator = () => {
       setQuizIndex(0);
       setQuizAnswers(Array.from({ length: normalized.length }).fill(null));
       setQuizDone(false);
-      setHasSaved(false);
+      setHasSaved(false); // They haven't explicitly saved/downloaded yet
       setMode('quiz');
       setSecondsLeft(totalSeconds || normalized.length * 45);
       toast.success('Questions generated');
+
+      // Auto-save to DB in background so it appears in Recent Quizzes immediately
+      try {
+        await questionsAPI.save(token, {
+          role: role.trim(),
+          difficulty,
+          topics,
+          questions: normalized
+        });
+        const statsRes = await questionsAPI.getSavedStats(token);
+        setSavedStats(statsRes.data || null);
+      } catch (err) {
+        console.error('Auto-save failed:', err);
+      }
+
     } catch (err) {
       const status = err?.response?.status;
       const msg = err?.response?.data?.message || err?.response?.data?.error || err?.message || 'Failed to generate quiz';
@@ -350,7 +366,7 @@ const QuestionGenerator = () => {
 
   const onSaveQuestions = async () => {
     if (saving || !questions.length) return;
-    if (!authLoaded || !isSignedIn) { toast.info('Loading session… try again'); return; }
+    if (!ready) { toast.info('Loading session… try again'); return; }
     const token = await getToken();
     if (!token) { toast.error('Not authenticated'); return; }
 
@@ -366,8 +382,7 @@ const QuestionGenerator = () => {
       // 1) Save to database
       const res = await questionsAPI.save(token, payload);
       const savedCount = Number(res.data?.saved) || 0;
-      const skipped = Number(res.data?.skipped) || 0;
-      toast.success(`Saved ${savedCount} question(s)${skipped ? ` • Skipped ${skipped} duplicate(s)` : ''}`);
+      toast.success('Quiz saved and PDF downloading...');
       setHasSaved(true);
 
       // 2) Refresh sidebar stats
@@ -376,14 +391,12 @@ const QuestionGenerator = () => {
         setSavedStats(statsRes.data || null);
       } catch (_) { /* ignore */ }
 
-      // 3) Download PDF (only if at least one question was newly saved)
-      if (savedCount > 0) {
-        try {
-          downloadQuestionsPdf({ role: payload.role, difficulty: payload.difficulty, topics: payload.topics, questions: payload.questions });
-        } catch (pdfErr) {
-          console.error('PDF generation failed:', pdfErr);
-          toast.error('Saved, but failed to generate PDF');
-        }
+      // 3) Download PDF
+      try {
+        downloadQuestionsPdf({ role: payload.role, difficulty: payload.difficulty, topics: payload.topics, questions: payload.questions });
+      } catch (pdfErr) {
+        console.error('PDF generation failed:', pdfErr);
+        toast.error('Saved, but failed to generate PDF');
       }
     } catch (err) {
       const status = err?.response?.status;
@@ -459,12 +472,12 @@ const QuestionGenerator = () => {
   /* ═══════════════════════════════════════════════ RENDER ═══════════════════ */
 
   return (
-    <div className="min-h-screen w-full bg-gradient-to-br from-[#0f172a] via-[#030712] to-[#020617] text-white overflow-hidden relative">
+    <div className="min-h-screen w-full bg-gradient-to-br from-[#0f172a] via-[#030712] to-[#020617] text-white overflow-x-hidden relative">
       <EnhancedAnimatedBackground />
 
       <div className="relative z-10 min-h-screen p-4 lg:p-8">
-        <div className="mx-auto w-full max-w-7xl">
-          <div className="flex gap-4">
+        <div className="mx-auto w-full max-w-[1600px]">
+          <div className="flex gap-5">
             <Sidebar
               openMobile={mobileSidebarOpen}
               onCloseMobile={() => setMobileSidebarOpen(false)}
@@ -480,7 +493,7 @@ const QuestionGenerator = () => {
               <div className="flex items-center gap-3">
                 <div className="flex-1 min-w-0">
                   <Navbar
-                    brand="DevPrep"
+                    brand=""
                     activeLabel="Questions"
                     links={navbarLinks}
                     onNavigate={safeNavigate}
@@ -538,160 +551,173 @@ const QuestionGenerator = () => {
                   </div>
                 ) : mode === 'settings' ? (
                   /* ────────── SETTINGS MODE ────────── */
-                  <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
-                    {/* Form — left 2/3 */}
-                    <div className="lg:col-span-2">
-                      <div className="rounded-3xl border border-white/10 bg-white/5 backdrop-blur-xl shadow-[0_10px_40px_rgba(0,0,0,0.35)] p-6 sm:p-7">
+                  <div className="grid grid-cols-1 lg:grid-cols-10 gap-6">
+                    {/* Form — left 7/10 */}
+                    <div className="lg:col-span-7">
+                      <div className="rounded-2xl border border-white/10 bg-[#1e1e2d]/60 backdrop-blur-xl p-6">
                         <div className="text-sm font-semibold text-slate-200 flex items-center gap-2">
                           <Brain className="w-4 h-4 text-violet-400" />
                           Quiz Settings
                         </div>
 
-                        {/* Role selection */}
-                        <div className="mt-5">
-                          <label className="block text-xs text-slate-400">Target Role</label>
-                          <div className="mt-2 relative" ref={roleDropdownRef}>
+                        {/* Scrollable Form Area */}
+                        <div className="mt-5 max-h-[500px] overflow-y-auto pr-2">
+                          {/* Role selection */}
+                          <div>
+                            <label className="block text-xs text-slate-400">Target Role</label>
+                            <div className="mt-2 relative" ref={roleDropdownRef}>
+                              <button
+                                type="button"
+                                onClick={() => setRoleDropdownOpen((v) => !v)}
+                                className="w-full h-11 px-4 rounded-xl bg-black/20 border border-white/10 hover:border-white/20 text-slate-100 inline-flex items-center justify-between gap-3 focus:outline-none focus:ring-2 focus:ring-violet-500/35 transition-colors"
+                              >
+                                <span className={role ? 'text-slate-100' : 'text-slate-400'}>
+                                  {role || 'Select a role'}
+                                </span>
+                                <ChevronDown className={`w-4 h-4 text-slate-300 transition-transform duration-200 ${roleDropdownOpen ? 'rotate-180' : ''}`} />
+                              </button>
+                              <AnimatePresence>
+                                {roleDropdownOpen && (
+                                  <motion.div
+                                    initial={{ opacity: 0, y: -4 }}
+                                    animate={{ opacity: 1, y: 0 }}
+                                    exit={{ opacity: 0, y: -4 }}
+                                    transition={{ duration: 0.15 }}
+                                    className="absolute z-20 mt-2 w-full rounded-2xl border border-white/10 bg-[#0b1220]/95 backdrop-blur-xl shadow-[0_10px_40px_rgba(0,0,0,0.55)] overflow-hidden"
+                                  >
+                                    <div className="max-h-64 overflow-auto py-2">
+                                      {ROLE_PRESETS.map((r) => (
+                                        <button
+                                          key={r}
+                                          type="button"
+                                          onClick={() => { setRole(r); setRoleDropdownOpen(false); }}
+                                          className={`w-full text-left px-4 py-2 text-sm transition-colors ${
+                                            r === role ? 'bg-violet-600/20 text-slate-100' : 'text-slate-200 hover:bg-white/5'
+                                          }`}
+                                        >
+                                          {r}
+                                        </button>
+                                      ))}
+                                    </div>
+                                  </motion.div>
+                                )}
+                              </AnimatePresence>
+                            </div>
+                          </div>
+
+                          {/* Difficulty */}
+                          <div className="mt-4">
+                            <label className="block text-xs text-slate-400">Difficulty Level</label>
+                            <div className="mt-2 grid grid-cols-3 gap-2">
+                              {DIFFICULTY_CONFIG.map((d) => {
+                                const active = difficulty === d.value;
+                                return (
+                                  <button
+                                    key={d.value}
+                                    type="button"
+                                    onClick={() => setDifficulty(d.value)}
+                                    className={`h-11 rounded-xl border text-sm font-semibold transition-all duration-200 ${
+                                      active
+                                        ? `${d.activeBg} ${d.activeText}`
+                                        : 'bg-white/5 border-white/10 hover:border-white/20 text-slate-300'
+                                    }`}
+                                  >
+                                    {d.value}
+                                  </button>
+                                );
+                              })}
+                            </div>
+                          </div>
+
+                          {/* Topics */}
+                          <div className="mt-4">
+                            <label className="block text-xs text-slate-400">
+                              Topic <span className="text-slate-500">(select one)</span>
+                            </label>
+                            <div className="mt-2 flex flex-wrap gap-2">
+                              {availableTopics.map((t) => {
+                                const active = topics.includes(t);
+                                return (
+                                  <button
+                                    key={t}
+                                    type="button"
+                                    onClick={() => toggleTopic(t)}
+                                    className={`px-3 h-9 rounded-xl border text-xs transition-all duration-200 ${
+                                      active
+                                        ? 'bg-violet-600/20 border-violet-500 text-violet-300'
+                                        : 'bg-white/5 border-white/10 hover:border-white/20 text-slate-300'
+                                    }`}
+                                  >
+                                    {t}
+                                  </button>
+                                );
+                              })}
+                            </div>
+                          </div>
+
+                          {/* Question count */}
+                          <div className="mt-4">
+                            <label className="block text-xs text-slate-400">Number of Questions</label>
+                            <div className="mt-2 grid grid-cols-3 gap-2">
+                              {[10, 15, 20].map((n) => {
+                                const active = Number(count) === n;
+                                return (
+                                  <button
+                                    key={n}
+                                    type="button"
+                                    onClick={() => setCount(n)}
+                                    className={`h-11 rounded-xl border text-sm font-semibold transition-all duration-200 ${
+                                      active
+                                        ? 'bg-violet-600/20 border-violet-500 text-violet-300'
+                                        : 'bg-white/5 border-white/10 hover:border-white/20 text-slate-300'
+                                    }`}
+                                  >
+                                    {n}
+                                  </button>
+                                );
+                              })}
+                            </div>
+                          </div>
+
+                          {/* Generate button */}
+                          <div className="mt-6 pt-5 border-t border-white/10 flex justify-end">
                             <button
                               type="button"
-                              onClick={() => setRoleDropdownOpen((v) => !v)}
-                              className="w-full h-11 px-4 rounded-xl bg-black/20 border border-white/10 hover:border-white/20 text-slate-100 inline-flex items-center justify-between gap-3 focus:outline-none focus:ring-2 focus:ring-violet-500/35 transition-colors"
+                              onClick={onGenerate}
+                              disabled={loading || !canGenerate}
+                              className="w-full sm:w-auto h-11 px-8 rounded-xl bg-violet-600 hover:bg-violet-700 border border-violet-500 text-white font-semibold inline-flex items-center justify-center gap-2 disabled:opacity-50 disabled:cursor-not-allowed transition-all duration-300 shadow-[0_0_20px_rgba(139,92,246,0.2)] hover:shadow-[0_0_30px_rgba(139,92,246,0.35)]"
                             >
-                              <span className={role ? 'text-slate-100' : 'text-slate-400'}>
-                                {role || 'Select a role'}
-                              </span>
-                              <ChevronDown className={`w-4 h-4 text-slate-300 transition-transform duration-200 ${roleDropdownOpen ? 'rotate-180' : ''}`} />
+                              <Brain className="w-5 h-5" />
+                              Generate Quiz
+                              <ArrowRight className="w-4 h-4" />
                             </button>
-                            <AnimatePresence>
-                              {roleDropdownOpen && (
-                                <motion.div
-                                  initial={{ opacity: 0, y: -4 }}
-                                  animate={{ opacity: 1, y: 0 }}
-                                  exit={{ opacity: 0, y: -4 }}
-                                  transition={{ duration: 0.15 }}
-                                  className="absolute z-20 mt-2 w-full rounded-2xl border border-white/10 bg-[#0b1220]/95 backdrop-blur-xl shadow-[0_10px_40px_rgba(0,0,0,0.55)] overflow-hidden"
-                                >
-                                  <div className="max-h-64 overflow-auto py-2">
-                                    {ROLE_PRESETS.map((r) => (
-                                      <button
-                                        key={r}
-                                        type="button"
-                                        onClick={() => { setRole(r); setRoleDropdownOpen(false); }}
-                                        className={`w-full text-left px-4 py-2 text-sm transition-colors ${
-                                          r === role ? 'bg-violet-600/20 text-slate-100' : 'text-slate-200 hover:bg-white/5'
-                                        }`}
-                                      >
-                                        {r}
-                                      </button>
-                                    ))}
-                                  </div>
-                                </motion.div>
-                              )}
-                            </AnimatePresence>
                           </div>
-                        </div>
-
-                        {/* Difficulty */}
-                        <div className="mt-4">
-                          <label className="block text-xs text-slate-400">Difficulty Level</label>
-                          <div className="mt-2 grid grid-cols-3 gap-2">
-                            {DIFFICULTY_CONFIG.map((d) => {
-                              const active = difficulty === d.value;
-                              return (
-                                <button
-                                  key={d.value}
-                                  type="button"
-                                  onClick={() => setDifficulty(d.value)}
-                                  className={`h-11 rounded-xl border text-sm font-semibold transition-all duration-200 ${
-                                    active
-                                      ? `${d.activeBg} text-slate-100`
-                                      : 'bg-white/5 border-white/10 hover:border-white/20 text-slate-300'
-                                  }`}
-                                >
-                                  {d.value}
-                                </button>
-                              );
-                            })}
-                          </div>
-                        </div>
-
-                        {/* Topics */}
-                        <div className="mt-4">
-                          <label className="block text-xs text-slate-400">
-                            Topic <span className="text-slate-500">(select one)</span>
-                          </label>
-                          <div className="mt-2 flex flex-wrap gap-2">
-                            {availableTopics.map((t) => {
-                              const active = topics.includes(t);
-                              return (
-                                <button
-                                  key={t}
-                                  type="button"
-                                  onClick={() => toggleTopic(t)}
-                                  className={`px-3 h-9 rounded-xl border text-xs transition-all duration-200 ${
-                                    active
-                                      ? 'bg-cyan-600/15 border-cyan-400/30 text-slate-100'
-                                      : 'bg-white/5 border-white/10 hover:border-white/20 text-slate-300'
-                                  }`}
-                                >
-                                  {t}
-                                </button>
-                              );
-                            })}
-                          </div>
-                        </div>
-
-                        {/* Question count */}
-                        <div className="mt-4">
-                          <label className="block text-xs text-slate-400">Number of Questions</label>
-                          <div className="mt-2 grid grid-cols-3 gap-2">
-                            {[10, 15, 20].map((n) => {
-                              const active = Number(count) === n;
-                              return (
-                                <button
-                                  key={n}
-                                  type="button"
-                                  onClick={() => setCount(n)}
-                                  className={`h-11 rounded-xl border text-sm font-semibold transition-all duration-200 ${
-                                    active
-                                      ? 'bg-cyan-600/20 border-cyan-400/30 text-slate-100'
-                                      : 'bg-white/5 border-white/10 hover:border-white/20 text-slate-300'
-                                  }`}
-                                >
-                                  {n}
-                                </button>
-                              );
-                            })}
-                          </div>
-                        </div>
-
-                        {/* Generate button */}
-                        <div className="mt-6 pt-5 border-t border-white/10">
-                          <button
-                            type="button"
-                            onClick={onGenerate}
-                            disabled={loading || !canGenerate}
-                            className="w-full sm:w-auto h-12 px-8 rounded-xl bg-gradient-to-r from-violet-600 to-indigo-600 hover:from-violet-500 hover:to-indigo-500 border border-white/10 hover:border-white/20 text-white font-semibold inline-flex items-center justify-center gap-2 disabled:opacity-50 disabled:cursor-not-allowed transition-all duration-300 shadow-[0_0_20px_rgba(139,92,246,0.2)] hover:shadow-[0_0_30px_rgba(139,92,246,0.35)]"
-                          >
-                            <Brain className="w-5 h-5" />
-                            Generate Quiz
-                            <ArrowRight className="w-4 h-4" />
-                          </button>
                         </div>
                       </div>
                     </div>
 
-                    {/* Recent Quizzes sidebar — right 1/3 */}
-                    <div className="lg:col-span-1">
-                      <div className="rounded-3xl border border-white/10 bg-white/5 backdrop-blur-xl shadow-[0_10px_40px_rgba(0,0,0,0.35)] p-6">
+                    {/* Recent Quizzes sidebar — right 3/10 */}
+                    <div className="lg:col-span-3">
+                      <div className="rounded-2xl border border-white/10 bg-[#1e1e2d]/60 backdrop-blur-xl p-6">
                         <div className="text-sm font-semibold text-slate-200 flex items-center gap-2">
                           <Clock className="w-4 h-4 text-cyan-400" />
                           Recent Quizzes
                         </div>
 
                         {statsLoading ? (
-                          <div className="mt-4 space-y-3">
+                          <div className="mt-4 space-y-2">
                             {[1, 2, 3].map((i) => (
-                              <div key={i} className="h-20 rounded-xl bg-white/5 animate-pulse" style={{ animationDelay: `${i * 100}ms` }} />
+                              <div key={i} className="rounded-xl border border-white/10 bg-black/10 p-3">
+                                <div className="flex items-center justify-between gap-2">
+                                  <div className="h-3 w-24 bg-white/10 rounded animate-pulse" />
+                                  <div className="h-3 w-8 bg-white/10 rounded animate-pulse" />
+                                </div>
+                                <div className="flex items-center gap-2 mt-2.5">
+                                  <div className="h-3 w-10 bg-white/5 rounded animate-pulse" />
+                                  <div className="h-3 w-14 bg-white/5 rounded animate-pulse" />
+                                  <div className="h-3 w-16 bg-white/5 rounded animate-pulse" />
+                                </div>
+                              </div>
                             ))}
                           </div>
                         ) : !savedStats || savedStats.totalSaved === 0 ? (
@@ -735,7 +761,7 @@ const QuestionGenerator = () => {
                   </div>
                 ) : (
                   /* ────────── QUIZ / SUBMITTED / REVIEW MODES ────────── */
-                  <div className="rounded-3xl border border-white/10 bg-white/5 backdrop-blur-xl shadow-[0_10px_40px_rgba(0,0,0,0.35)] overflow-hidden">
+                  <div className="rounded-2xl border border-white/10 bg-[#1e1e2d]/60 backdrop-blur-xl overflow-hidden">
                     {/* Quiz header */}
                     <div className="p-5 border-b border-white/10">
                       <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3">
@@ -846,7 +872,7 @@ const QuestionGenerator = () => {
                                     setQuizIndex((v) => Math.min(questions.length - 1, v + 1));
                                   }}
                                   disabled={selected === null || selected === undefined}
-                                  className="h-11 px-6 rounded-xl bg-gradient-to-r from-violet-600/80 to-indigo-600/70 border border-white/10 hover:border-white/20 text-white font-semibold disabled:opacity-40 transition-all duration-200"
+                                  className="h-11 px-8 rounded-xl bg-violet-600 hover:bg-violet-700 border border-violet-500 text-white font-semibold disabled:opacity-40 disabled:cursor-not-allowed transition-all duration-300 shadow-[0_0_20px_rgba(139,92,246,0.2)] hover:shadow-[0_0_30px_rgba(139,92,246,0.35)]"
                                 >
                                   {quizIndex + 1 >= questions.length ? 'Submit Quiz' : 'Next'}
                                   {quizIndex + 1 < questions.length && <ArrowRight className="w-4 h-4 ml-1 inline" />}

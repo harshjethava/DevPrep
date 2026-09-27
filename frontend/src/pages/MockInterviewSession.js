@@ -1,7 +1,8 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
 import { useNavigate, useParams } from 'react-router-dom';
-import { useAuth, useClerk, useUser } from '@clerk/clerk-react';
+import { useClerk, useUser } from '@clerk/clerk-react';
+import { useReadyAuth } from '../hooks/useReadyAuth';
 import { toast } from 'sonner';
 import {
   LayoutDashboard,
@@ -33,11 +34,11 @@ const MockInterviewSession = () => {
   const { sessionId } = useParams();
   const navigate = useNavigate();
   const { user } = useUser();
-  const { getToken, isLoaded: authLoaded, isSignedIn } = useAuth();
+  const { ready, getToken } = useReadyAuth();
   const { signOut } = useClerk();
 
   const [mobileSidebarOpen, setMobileSidebarOpen] = useState(false);
-  const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
+  const [sidebarCollapsed, setSidebarCollapsed] = useState(() => localStorage.getItem("sidebarCollapsed") === "true");
   const [dbProfile, setDbProfile] = useState(null);
   const [confirmLogoutOpen, setConfirmLogoutOpen] = useState(false);
   const [logoutLoading, setLogoutLoading] = useState(false);
@@ -95,7 +96,7 @@ const MockInterviewSession = () => {
 
   // Fetch profile
   useEffect(() => {
-    if (!authLoaded || !isSignedIn || !user) return;
+    if (!ready) return;
     (async () => {
       try {
         const token = await getToken();
@@ -104,11 +105,11 @@ const MockInterviewSession = () => {
         setDbProfile(res.data?.user || null);
       } catch (_) { /* ignore */ }
     })();
-  }, [authLoaded, isSignedIn, getToken, user]);
+  }, [ready, getToken]);
 
   // Fetch session
   const fetchSession = useCallback(async () => {
-    if (!authLoaded || !isSignedIn || !user || !sessionId) return;
+    if (!ready || !sessionId) return;
     try {
       const token = await getToken();
       if (!token) { setError('Not authenticated'); setLoading(false); return; }
@@ -120,7 +121,7 @@ const MockInterviewSession = () => {
       setError(msg);
     }
     setLoading(false);
-  }, [authLoaded, isSignedIn, user, sessionId, getToken]);
+  }, [ready, sessionId, getToken]);
 
   useEffect(() => { fetchSession(); }, [fetchSession]);
 
@@ -225,17 +226,35 @@ const MockInterviewSession = () => {
   };
   endInterviewRef.current = handleEndInterview;
 
+  // Auto-complete interview when final message is received
+  useEffect(() => {
+    if (!session || session.status !== 'active') return;
+
+    const msgs = session.messages || [];
+    if (msgs.length === 0) return;
+
+    const lastMsg = msgs[msgs.length - 1];
+    if (lastMsg.role === 'interviewer' && lastMsg.content.toLowerCase().includes('concludes our interview')) {
+      const timer = setTimeout(() => {
+        if (endInterviewRef.current) {
+          endInterviewRef.current('completed');
+        }
+      }, 3000);
+      return () => clearTimeout(timer);
+    }
+  }, [session?.messages, session?.status]);
+
   const messages = session?.messages || [];
   const evaluation = session?.evaluation;
   const interviewerMsgCount = messages.filter((m) => m.role === 'interviewer').length;
 
   return (
-    <div className="min-h-screen w-full bg-gradient-to-br from-[#0f172a] via-[#030712] to-[#020617] text-white overflow-hidden relative">
+    <div className="min-h-screen w-full bg-gradient-to-br from-[#0f172a] via-[#030712] to-[#020617] text-white overflow-x-hidden relative">
       <EnhancedAnimatedBackground />
 
       <div className="relative z-10 min-h-screen p-4 lg:p-8">
-        <div className="mx-auto w-full max-w-7xl">
-          <div className="flex gap-4">
+        <div className="mx-auto w-full max-w-[1600px]">
+          <div className="flex gap-5">
             <Sidebar
               openMobile={mobileSidebarOpen}
               onCloseMobile={() => setMobileSidebarOpen(false)}
@@ -251,7 +270,7 @@ const MockInterviewSession = () => {
               <div className="flex items-center gap-3">
                 <div className="flex-1 min-w-0">
                   <Navbar
-                    brand="DevPrep"
+                    brand=""
                     activeLabel="Mock Interview"
                     links={navbarLinks}
                     onNavigate={safeNavigate}
@@ -295,7 +314,7 @@ const MockInterviewSession = () => {
                   className="mt-6 flex-1 flex flex-col"
                 >
                   {/* Session header */}
-                  <div className="rounded-2xl border border-white/10 bg-white/5 backdrop-blur-xl p-4 flex flex-wrap items-center justify-between gap-3">
+                  <div className="rounded-2xl border border-white/10 bg-[#1e1e2d]/60 backdrop-blur-xl p-4 flex flex-wrap items-center justify-between gap-3">
                     <div className="flex items-center gap-3">
                       <button
                         type="button"
@@ -359,7 +378,7 @@ const MockInterviewSession = () => {
                   </div>
 
                   {/* Chat area */}
-                  <div className="mt-3 flex-1 rounded-2xl border border-white/10 bg-white/[0.02] backdrop-blur-xl flex flex-col" style={{ minHeight: '400px', maxHeight: 'calc(100vh - 320px)' }}>
+                  <div className="mt-3 flex-1 rounded-2xl border border-white/10 bg-[#1e1e2d]/40 backdrop-blur-xl flex flex-col" style={{ minHeight: '400px', maxHeight: 'calc(100vh - 320px)' }}>
                     {/* Messages */}
                     <div className="flex-1 overflow-y-auto p-4 space-y-4">
                       {messages.map((msg, i) => (
@@ -437,7 +456,7 @@ const MockInterviewSession = () => {
                             type="button"
                             onClick={handleSendMessage}
                             disabled={sending || !messageInput.trim()}
-                            className="h-11 w-11 rounded-xl bg-gradient-to-r from-violet-600 to-indigo-600 hover:from-violet-500 hover:to-indigo-500 border border-white/10 flex items-center justify-center disabled:opacity-40 disabled:cursor-not-allowed transition-all duration-200 shadow-[0_0_15px_rgba(139,92,246,0.2)] hover:shadow-[0_0_20px_rgba(139,92,246,0.35)] flex-shrink-0"
+                            className="h-11 w-11 rounded-xl bg-violet-600 hover:bg-violet-700 border border-violet-500 flex items-center justify-center disabled:opacity-50 disabled:cursor-not-allowed transition-all duration-300 shadow-[0_0_20px_rgba(139,92,246,0.2)] hover:shadow-[0_0_30px_rgba(139,92,246,0.35)] flex-shrink-0"
                           >
                             <Send className="w-4 h-4 text-white" />
                           </button>
@@ -461,7 +480,7 @@ const MockInterviewSession = () => {
                       initial={{ opacity: 0, y: 12 }}
                       animate={{ opacity: 1, y: 0 }}
                       transition={{ duration: 0.6 }}
-                      className="mt-4 rounded-2xl border border-white/10 bg-white/5 backdrop-blur-xl p-6"
+                      className="mt-4 rounded-2xl border border-white/10 bg-[#1e1e2d]/60 backdrop-blur-xl p-6"
                     >
                       <div className="flex items-center gap-2 mb-5">
                         <Trophy className="w-5 h-5 text-amber-400" />
@@ -622,7 +641,7 @@ const MockInterviewSession = () => {
                         <button
                           type="button"
                           onClick={() => navigate('/interview/mock')}
-                          className="h-11 px-6 rounded-xl bg-gradient-to-r from-violet-600 to-indigo-600 hover:from-violet-500 hover:to-indigo-500 border border-white/10 text-white font-semibold inline-flex items-center gap-2 transition-all duration-200"
+                          className="h-11 px-8 rounded-xl bg-violet-600 hover:bg-violet-700 border border-violet-500 text-white font-semibold inline-flex items-center gap-2 transition-all duration-300 shadow-[0_0_20px_rgba(139,92,246,0.2)] hover:shadow-[0_0_30px_rgba(139,92,246,0.35)]"
                         >
                           <PlayCircle className="w-4 h-4" />
                           Start New Interview

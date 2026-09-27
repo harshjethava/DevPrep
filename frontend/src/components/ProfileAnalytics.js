@@ -36,7 +36,10 @@ function buildHeatmapData(activity = []) {
   for (let i = daysInYear - 1; i >= 0; i--) {
     const d = new Date(yearStart);
     d.setDate(yearStart.getDate() + i);
-    const key = d.toISOString().split('T')[0];
+    const y = d.getFullYear();
+    const m = String(d.getMonth() + 1).padStart(2, '0');
+    const dateNum = String(d.getDate()).padStart(2, '0');
+    const key = `${y}-${m}-${dateNum}`;
     result.push({ date: key, count: map[key] || 0 });
   }
   return result;
@@ -145,7 +148,8 @@ function ActivityHeatmap({ activity }) {
     });
     
     // Get the first day of the month to determine week alignment
-    const firstDay = monthStart.getDay(); // 0 = Sunday, 1 = Monday, etc.
+    let firstDay = monthStart.getDay() - 1;
+    if (firstDay === -1) firstDay = 6; // Monday = 0, Sunday = 6
     
     // Create calendar grid for this month
     const calendarDays = [];
@@ -177,20 +181,16 @@ function ActivityHeatmap({ activity }) {
   }
 
   return (
-    <div className="w-full overflow-x-auto">
+    <div className="w-full overflow-x-auto pb-4 custom-scrollbar">
       {/* Year header */}
       <div className="text-sm font-semibold text-slate-200 mb-4">
         {currentYear} - Submission Activity
       </div>
       
       {/* Month sections */}
-      <div className="space-y-6">
+      <div className="flex flex-nowrap min-w-full justify-between gap-3 pb-2">
         {months.map((month, monthIndex) => (
-          <div key={monthIndex} className="inline-block mr-8">
-            {/* Month name */}
-            <div className="text-xs font-medium text-slate-400 mb-2">
-              {month.name}
-            </div>
+          <div key={monthIndex} className="flex flex-col">
             
             {/* Month heatmap */}
             <div className="flex gap-[3px]">
@@ -204,12 +204,17 @@ function ActivityHeatmap({ activity }) {
                         day ? 'cursor-pointer transition-transform hover:scale-125' : ''
                       }`}
                       style={{ 
-                        backgroundColor: day && month.hasData ? heatColor(day.count) : '#1e293b'
+                        backgroundColor: day ? (month.hasData ? heatColor(day.count) : '#1e293b') : 'transparent'
                       }}
                     />
                   ))}
                 </div>
               ))}
+            </div>
+
+            {/* Month name */}
+            <div className="text-xs font-medium text-slate-400 mt-2 text-center w-full">
+              {month.name}
             </div>
           </div>
         ))}

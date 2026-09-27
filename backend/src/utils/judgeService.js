@@ -175,11 +175,21 @@ async function runAgainstTestCases(language, sourceCode, testCases) {
     if (execResult.status === 'compile_error') break;
   }
 
+  // Determine overall status: use the most severe failure across all results.
+  // Priority: compile_error > time_limit > memory_limit > runtime_error > wrong_answer > accepted
+  const SEVERITY = { compile_error: 5, time_limit: 4, memory_limit: 3, runtime_error: 2, wrong_answer: 1, accepted: 0 };
   let overallStatus = 'accepted';
-  if (passedCount === 0 && testCases.length > 0) {
-    overallStatus = results[0]?.status || 'wrong_answer';
-  } else if (passedCount < testCases.length) {
-    overallStatus = 'wrong_answer';
+  if (passedCount < testCases.length) {
+    for (const r of results) {
+      if (!r.passed) {
+        const s = r.status || 'wrong_answer';
+        if ((SEVERITY[s] || 0) > (SEVERITY[overallStatus] || 0)) {
+          overallStatus = s;
+        }
+      }
+    }
+    // Ensure we never return 'accepted' when some tests failed
+    if (overallStatus === 'accepted') overallStatus = 'wrong_answer';
   }
 
   return {

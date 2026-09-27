@@ -136,7 +136,8 @@ function ActivityHeatmap({ activity }) {
     });
     
     // Get the first day of the month to determine week alignment
-    const firstDay = monthStart.getDay(); // 0 = Sunday, 1 = Monday, etc.
+    let firstDay = monthStart.getDay() - 1;
+    if (firstDay === -1) firstDay = 6; // Monday = 0, Sunday = 6
     
     // Create calendar grid for this month
     const calendarDays = [];
@@ -168,20 +169,16 @@ function ActivityHeatmap({ activity }) {
   }
 
   return (
-    <div className="w-full overflow-x-auto">
+    <div className="w-full overflow-x-auto pb-4 custom-scrollbar">
       {/* Year header */}
       <div className="text-sm font-semibold text-slate-200 mb-4">
-        {currentYear}
+        {currentYear} - Submission Activity
       </div>
       
       {/* Month sections */}
-      <div className="flex gap-4 flex-wrap">
+      <div className="flex flex-nowrap min-w-full justify-between gap-3 pb-2">
         {months.map((month, monthIndex) => (
-          <div key={monthIndex} className="inline-block mr-8">
-            {/* Month name */}
-            <div className="text-xs font-medium text-slate-400 mb-2">
-              {month.name}
-            </div>
+          <div key={monthIndex} className="flex flex-col">
             
             {/* Month heatmap */}
             <div className="flex gap-[3px]">
@@ -195,19 +192,24 @@ function ActivityHeatmap({ activity }) {
                         day ? 'cursor-pointer transition-transform hover:scale-125' : ''
                       }`}
                       style={{ 
-                        backgroundColor: day && month.hasData ? heatColor(day.count) : '#1e293b'
+                        backgroundColor: day ? (month.hasData ? heatColor(day.count) : '#1e293b') : 'transparent'
                       }}
                     />
                   ))}
                 </div>
               ))}
             </div>
+
+            {/* Month name */}
+            <div className="text-xs font-medium text-slate-400 mt-2 text-center w-full">
+              {month.name}
+            </div>
           </div>
         ))}
       </div>
       
       {/* Legend */}
-      <div className="flex items-center gap-1.5 mt-4 text-xs text-slate-500">
+      <div className="flex items-center gap-1.5 mt-6 text-xs text-slate-500">
         <span>Less</span>
         {['#1e293b', '#0e7490', '#0891b2', '#06b6d4', '#22d3ee'].map((c) => (
           <div key={c} className="w-[11px] h-[11px] rounded-[2px]" style={{ backgroundColor: c }} />

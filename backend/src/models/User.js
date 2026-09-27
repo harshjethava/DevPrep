@@ -17,7 +17,7 @@ const userSchema = new mongoose.Schema(
       unique: true,
       sparse: true,
       index: true,
-      default: ''
+      set: (v) => (v === '' ? undefined : v)
     },
     name: {
       type: String,

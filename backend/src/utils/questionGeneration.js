@@ -334,17 +334,10 @@ async function sleep(ms) {
 async function generateInterviewQuestions({ role, difficulty, topics, count, excludeQuestions = [] }) {
   const safeCount = Math.max(1, Math.min(safeInt(count, 10) || 10, 20));
 
-  const parameters = {
-    // keep deterministic-ish output
-    temperature: 0.1,
-    // lower token budget to reduce latency; we only need JSON with short fields
-    max_new_tokens: Math.min(420, 120 + safeCount * 22),
-    return_full_text: false
-  };
-
-  const options = {
-    wait_for_model: true
-  };
+  // PERFORMANCE FIX: Over-request by ~30% in a single call so we almost always
+  // get enough valid questions without needing a second Groq round-trip.
+  // e.g. user wants 10 -> we request 13; user wants 20 -> we request 20 (cap).
+  const requestCount = Math.min(20, Math.ceil(safeCount * 1.3));
 
   const all = [];
   let lastErr;
@@ -365,22 +358,25 @@ async function generateInterviewQuestions({ role, difficulty, topics, count, exc
     }
   };
 
-  const attemptOnce = async ({ remaining, params, timeoutMs }) => {
+  const attemptOnce = async ({ targetCount, timeoutMs }) => {
     const prompt = buildPrompt({
       role,
       difficulty,
       topics,
-      count: remaining,
-      excludeQuestions: [...excludeQuestions, ...all.map((q) => q.question)]
+      count: targetCount,
+      excludeQuestions: [...excludeQuestions, ...all.map((q) => q.question)],
     });
 
     const raw = await callWithRetries(
       () =>
         generateText({
           prompt,
-          parameters: params,
-          options,
-          timeoutMs
+          parameters: {
+            temperature: 0.1,
+            max_new_tokens: Math.min(2400, 320 + targetCount * 170),
+            return_full_text: false,
+          },
+          timeoutMs,
         }),
       { maxAttempts: 3 }
     );
@@ -389,8 +385,8 @@ async function generateInterviewQuestions({ role, difficulty, topics, count, exc
     try {
       batch = parseQuestionsFromModelOutput(raw);
     } catch (_) {
+      // Repair pass: ask model to fix its own malformed output
       const rawText =
-        (Array.isArray(raw) && raw[0] && raw[0].generated_text) ||
         (raw && raw.choices && raw.choices[0] && raw.choices[0].message && raw.choices[0].message.content) ||
         JSON.stringify(raw);
       const repairPrompt = buildRepairPrompt(rawText);
@@ -398,13 +394,8 @@ async function generateInterviewQuestions({ role, difficulty, topics, count, exc
         () =>
           generateText({
             prompt: repairPrompt,
-            parameters: {
-              temperature: 0,
-              max_new_tokens: Math.max(420, params.max_new_tokens || 420),
-              return_full_text: false
-            },
-            options,
-            timeoutMs: Math.max(20000, Math.min(60000, timeoutMs))
+            parameters: { temperature: 0, max_new_tokens: 2400, return_full_text: false },
+            timeoutMs: 65000,
           }),
         { maxAttempts: 2 }
       );
@@ -415,31 +406,14 @@ async function generateInterviewQuestions({ role, difficulty, topics, count, exc
     all.splice(0, all.length, ...merged);
   };
 
-  // We may need multiple calls to reliably get exactly safeCount valid MCQs.
-  // With Groq, prefer fewer, larger calls to reduce latency.
-  const maxCalls = 3;
-  for (let call = 1; call <= maxCalls; call += 1) {
-    const remaining = safeCount - all.length;
-    if (remaining <= 0) break;
-
-    const batchSize = remaining;
-    try {
-      await attemptOnce({
-        remaining: batchSize,
-        params: {
-          ...parameters,
-          max_new_tokens: Math.min(2400, 320 + batchSize * 170)
-        },
-        timeoutMs: 65000
-      });
-    } catch (err) {
-      lastErr = err;
-      if (!isRetryableAiError(err)) {
-        // Non-retryable parse/content issues should not instantly fail; keep trying.
-      } else {
-        const hinted = getRetryDelayMsFromError(err);
-        await sleep(Math.max(hinted, 500 * call));
-      }
+  // Primary call: request requestCount (safeCount + buffer) questions at once.
+  // This covers the target in a single Groq round-trip for the vast majority of cases.
+  try {
+    await attemptOnce({ targetCount: requestCount, timeoutMs: 65000 });
+  } catch (err) {
+    lastErr = err;
+    if (isRetryableAiError(err)) {
+      await sleep(Math.max(getRetryDelayMsFromError(err), 500));
     }
   }
 
@@ -447,20 +421,11 @@ async function generateInterviewQuestions({ role, difficulty, topics, count, exc
     return all.slice(0, safeCount);
   }
 
-  // Rescue attempts: higher budget and longer timeout. Try twice before failing.
-  for (let rescue = 1; rescue <= 2; rescue += 1) {
-    const remaining = safeCount - all.length;
-    if (remaining <= 0) break;
+  // Single fallback call for the remaining questions (replaces the old 5-call loop).
+  const remaining = safeCount - all.length;
+  if (remaining > 0) {
     try {
-      await attemptOnce({
-        remaining,
-        params: {
-          temperature: 0.05,
-          max_new_tokens: Math.min(1200, 260 + remaining * 90),
-          return_full_text: false
-        },
-        timeoutMs: 65000
-      });
+      await attemptOnce({ targetCount: remaining, timeoutMs: 65000 });
     } catch (err) {
       lastErr = err;
     }
@@ -468,6 +433,11 @@ async function generateInterviewQuestions({ role, difficulty, topics, count, exc
 
   if (all.length >= safeCount) {
     return all.slice(0, safeCount);
+  }
+
+  // Return whatever we have if we got at least some questions
+  if (all.length > 0) {
+    return all;
   }
 
   const baseMsg = lastErr && lastErr.message ? lastErr.message : 'Failed to generate questions';

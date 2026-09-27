@@ -3,10 +3,23 @@ const { clerkClient } = require('@clerk/clerk-sdk-node');
 const MockInterviewSession = require('../models/MockInterviewSession');
 const Resume = require('../models/Resume');
 const User = require('../models/User');
-const {
-  upsertUserFromClerkApi,
-  getClerkUserIdFromAuth
-} = require('./clerkSyncController');
+const { upsertUserFromClerkApi, getClerkUserIdFromAuth } = require('./clerkSyncController');
+const { groqChat } = require('../utils/aiService');
+
+// ---------------------------------------------------------------------------
+// Constants
+// ---------------------------------------------------------------------------
+
+// Maximum number of messages (user + interviewer combined) sent to Groq on
+// each turn. This bounds token usage and keeps latency constant regardless of
+// how long the session runs. Older messages beyond this window are trimmed.
+// The system prompt is always included; only chat history is windowed.
+const CHAT_HISTORY_WINDOW = 20;
+
+// After this many messages the session is considered "full" and no more
+// candidate messages are accepted. This prevents MongoDB documents from
+// growing beyond the 16 MB document limit.
+const MAX_SESSION_MESSAGES = 100;
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -24,64 +37,13 @@ async function resolveUser(req) {
   return user;
 }
 
-function getGroqApiKey() {
-  const key = process.env.GROQ_API_KEY;
-  return key ? String(key).trim() : '';
-}
-
-function getGroqModel() {
-  const model = process.env.GROQ_MODEL || 'llama-3.3-70b-versatile';
-  return String(model).trim();
-}
-
-async function groqChat(messages, { temperature = 0.7, maxTokens = 2048, timeoutMs = 60000 } = {}) {
-  const apiKey = getGroqApiKey();
-  if (!apiKey) throw new Error('GROQ_API_KEY is not set');
-
-  const controller = new AbortController();
-  const t = setTimeout(() => controller.abort(), timeoutMs);
-
-  try {
-    const res = await fetch('https://api.groq.com/openai/v1/chat/completions', {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        Authorization: `Bearer ${apiKey}`
-      },
-      body: JSON.stringify({
-        model: getGroqModel(),
-        messages,
-        temperature,
-        max_tokens: maxTokens
-      }),
-      signal: controller.signal
-    });
-
-    const text = await res.text();
-    let json;
-    try { json = text ? JSON.parse(text) : null; } catch (_) { json = null; }
-
-    if (!res.ok) {
-      const msg = (json && json.error && (json.error.message || json.error.type)) ||
-        (json && json.message) || text || `Groq request failed (${res.status})`;
-      const e = new Error(msg);
-      e.status = res.status;
-      throw e;
-    }
-
-    const content = json?.choices?.[0]?.message?.content || '';
-    return content;
-  } finally {
-    clearTimeout(t);
-  }
-}
-
 // ---------------------------------------------------------------------------
 // AI Prompts
 // ---------------------------------------------------------------------------
 
 function buildSystemPrompt(session) {
-  const typeLabel = session.interviewType === 'technical' ? 'Technical'
+  const typeLabel =
+    session.interviewType === 'technical' ? 'Technical'
     : session.interviewType === 'hr' ? 'HR / Behavioral'
     : session.interviewType === 'resume-based' ? 'Resume-Based'
     : 'Mixed (Technical + HR)';
@@ -147,9 +109,11 @@ TONE:
 - Keep the interview interactive. Never break the flow by giving long explanations.
 - Always maintain interviewer role under all circumstances.`;
 
-  // Inject resume context if available
   if (session.resumeContext) {
-    return base + `\n\nCandidate's Resume Summary:\n${session.resumeContext}\n\nADDITIONAL RESUME-BASED RULES:\n- Ask questions specifically about the candidate's listed projects, experience, and skills.\n- Probe deeper into technologies they claim to know.\n- Ask about challenges faced in their listed projects.\n- Verify their claimed experience with follow-up technical questions.\n- Reference specific items from their resume when asking questions.\n- Mix resume-specific questions with general questions relevant to their target role.`;
+    return (
+      base +
+      `\n\nCandidate's Resume Summary:\n${session.resumeContext}\n\nADDITIONAL RESUME-BASED RULES:\n- Ask questions specifically about the candidate's listed projects, experience, and skills.\n- Probe deeper into technologies they claim to know.\n- Ask about challenges faced in their listed projects.\n- Verify their claimed experience with follow-up technical questions.\n- Reference specific items from their resume when asking questions.\n- Mix resume-specific questions with general questions relevant to their target role.`
+    );
   }
 
   return base;
@@ -187,6 +151,31 @@ Respond ONLY with valid JSON (no markdown, no code fences, no extra text). Use t
 }`;
 }
 
+/**
+ * Build the windowed message history to send to Groq.
+ *
+ * Always includes the system prompt. Only sends the most recent
+ * CHAT_HISTORY_WINDOW messages from the full session history to keep token
+ * usage bounded regardless of session length.
+ */
+function buildGroqMessages(session) {
+  const systemPrompt = buildSystemPrompt(session);
+  const allMessages = session.messages;
+
+  // Apply sliding window — take the most recent N messages
+  const windowedMessages = allMessages.length > CHAT_HISTORY_WINDOW
+    ? allMessages.slice(-CHAT_HISTORY_WINDOW)
+    : allMessages;
+
+  return [
+    { role: 'system', content: systemPrompt },
+    ...windowedMessages.map((msg) => ({
+      role: msg.role === 'interviewer' ? 'assistant' : 'user',
+      content: msg.content,
+    })),
+  ];
+}
+
 // ---------------------------------------------------------------------------
 // Controllers
 // ---------------------------------------------------------------------------
@@ -202,7 +191,7 @@ async function startSession(req, res, next) {
       difficulty = 'medium',
       duration = 30,
       selectedTopics = [],
-      resumeId = null
+      resumeId = null,
     } = req.body;
 
     // Build resume context if resumeId is provided
@@ -226,6 +215,15 @@ async function startSession(req, res, next) {
           if (ed.education && ed.education.length) {
             parts.push('Education:\n' + ed.education.map((e) => `- ${e.title}${e.description ? ': ' + e.description : ''}`).join('\n'));
           }
+          if (ed.awards && ed.awards.length) {
+            parts.push('Awards & Achievements:\n' + ed.awards.map((a) => `- ${a.title}${a.description ? ': ' + a.description : ''}`).join('\n'));
+          }
+          if (ed.certifications && ed.certifications.length) {
+            parts.push('Certifications:\n' + ed.certifications.map((c) => `- ${c.title}${c.description ? ': ' + c.description : ''}`).join('\n'));
+          }
+          if (ed.competitiveProgramming && ed.competitiveProgramming.length) {
+            parts.push('Competitive Programming:\n' + ed.competitiveProgramming.map((cp) => `- ${cp.title}${cp.description ? ': ' + cp.description : ''}`).join('\n'));
+          }
           resumeContext = parts.join('\n\n');
         }
       } catch (_) {
@@ -245,26 +243,21 @@ async function startSession(req, res, next) {
       status: 'active',
       startedAt: new Date(),
       currentQuestionNumber: 1,
-      messages: []
+      messages: [],
     });
 
     // Generate first interviewer message
-    const systemPrompt = buildSystemPrompt(session);
     let aiContent;
     try {
       aiContent = await groqChat([
-        { role: 'system', content: systemPrompt },
-        { role: 'user', content: 'Please begin the interview. Introduce yourself briefly and ask your first question.' }
+        { role: 'system', content: buildSystemPrompt(session) },
+        { role: 'user', content: 'Please begin the interview. Introduce yourself briefly and ask your first question.' },
       ]);
-    } catch (aiErr) {
+    } catch (_) {
       aiContent = `Hello! I'm your interviewer today. Let's get started. Could you tell me about your experience with ${session.selectedTopics[0] || session.role}?`;
     }
 
-    session.messages.push({
-      role: 'interviewer',
-      content: aiContent,
-      timestamp: new Date()
-    });
+    session.messages.push({ role: 'interviewer', content: aiContent, timestamp: new Date() });
     await session.save();
 
     return res.status(201).json({ session });
@@ -307,46 +300,40 @@ async function sendMessage(req, res, next) {
       return res.status(400).json({ message: 'Interview session is not active' });
     }
 
+    // Enforce max message count to prevent document from growing beyond MongoDB 16 MB limit
+    if (session.messages.length >= MAX_SESSION_MESSAGES) {
+      return res.status(400).json({
+        message: 'This session has reached its maximum length. Please end the interview to receive your evaluation.',
+        sessionFull: true,
+      });
+    }
+
     const { content } = req.body;
 
     // Save user message
     session.messages.push({
       role: 'user',
       content: String(content).trim(),
-      timestamp: new Date()
+      timestamp: new Date(),
     });
 
-    // Build conversation history for Groq
-    const systemPrompt = buildSystemPrompt(session);
-    const chatMessages = [{ role: 'system', content: systemPrompt }];
-
-    for (const msg of session.messages) {
-      chatMessages.push({
-        role: msg.role === 'interviewer' ? 'assistant' : 'user',
-        content: msg.content
-      });
-    }
+    // Build windowed message history for Groq (sliding window applied here)
+    const chatMessages = buildGroqMessages(session);
 
     // Generate AI follow-up
     let aiContent;
     try {
       aiContent = await groqChat(chatMessages);
-    } catch (aiErr) {
-      aiContent = 'That\'s interesting. Could you elaborate on that a bit more?';
+    } catch (_) {
+      aiContent = "That's interesting. Could you elaborate on that a bit more?";
     }
 
-    session.messages.push({
-      role: 'interviewer',
-      content: aiContent,
-      timestamp: new Date()
-    });
+    session.messages.push({ role: 'interviewer', content: aiContent, timestamp: new Date() });
 
     // Count interviewer messages as question number
-    const interviewerCount = session.messages.filter((m) => m.role === 'interviewer').length;
-    session.currentQuestionNumber = interviewerCount;
+    session.currentQuestionNumber = session.messages.filter((m) => m.role === 'interviewer').length;
 
     await session.save();
-
     return res.status(200).json({ session });
   } catch (err) {
     return next(err);
@@ -380,12 +367,12 @@ async function endSession(req, res, next) {
         const evalRaw = await groqChat(
           [
             { role: 'system', content: 'You are an interview evaluation expert. Respond only with valid JSON.' },
-            { role: 'user', content: evalPrompt }
+            { role: 'user', content: evalPrompt },
           ],
           { temperature: 0.3, maxTokens: 4096 }
         );
 
-        // Parse JSON from response — strip code fences if the model adds them
+        // Parse JSON — strip code fences if the model adds them
         let cleaned = evalRaw.trim();
         if (cleaned.startsWith('```')) {
           cleaned = cleaned.replace(/^```(?:json)?\s*/i, '').replace(/```\s*$/, '').trim();
@@ -402,9 +389,9 @@ async function endSession(req, res, next) {
           technicalDepthFeedback: String(evalData.technicalDepthFeedback || ''),
           improvementTips: Array.isArray(evalData.improvementTips) ? evalData.improvementTips : [],
           recommendedNextSteps: Array.isArray(evalData.recommendedNextSteps) ? evalData.recommendedNextSteps : [],
-          summary: String(evalData.summary || '')
+          summary: String(evalData.summary || ''),
         };
-      } catch (evalErr) {
+      } catch (_) {
         // Fallback evaluation if AI fails
         session.evaluation = {
           overallScore: 50,
@@ -415,7 +402,7 @@ async function endSession(req, res, next) {
           technicalDepthFeedback: '',
           improvementTips: ['Practice more mock interviews to improve'],
           recommendedNextSteps: ['Try another mock interview session'],
-          summary: 'The interview was completed. Automated evaluation encountered an issue.'
+          summary: 'The interview was completed. Automated evaluation encountered an issue.',
         };
       }
     }
@@ -433,7 +420,9 @@ async function getHistory(req, res, next) {
     if (!user) return res.status(401).json({ message: 'Not authorized' });
 
     const sessions = await MockInterviewSession.find({ userId: user._id })
-      .select('interviewType role difficulty duration status startedAt endedAt currentQuestionNumber evaluation.overallScore evaluation.summary createdAt')
+      .select(
+        'interviewType role difficulty duration status startedAt endedAt currentQuestionNumber evaluation.overallScore evaluation.summary createdAt'
+      )
       .sort({ createdAt: -1 })
       .limit(50);
 
@@ -443,10 +432,4 @@ async function getHistory(req, res, next) {
   }
 }
 
-module.exports = {
-  startSession,
-  getSession,
-  sendMessage,
-  endSession,
-  getHistory
-};
+module.exports = { startSession, getSession, sendMessage, endSession, getHistory };

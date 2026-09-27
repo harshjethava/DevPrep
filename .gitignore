@@ -29,12 +29,11 @@ coverage/
 # CRA / Next caches
 .cache/
 
-# Backend runtime uploads (if any)
+# Backend runtime uploads and executor sandbox
 backend/uploads/
+backend/executor/.work/
 
 # Misc
 *.pid
 *.seed
 *.tgz
-
-# *.md 
