@@ -277,11 +277,10 @@ async function getProfileInsights(req, res, next) {
       Resume.countDocuments({ userId: new mongoose.Types.ObjectId(userId) }),
       Submission.aggregate([
         { $match: { ...matchUser, isDraft: false } },
-        { $group: { _id: '$problemId' } },
         {
           $lookup: {
             from: 'codingproblems',
-            localField: '_id',
+            localField: 'problemId',
             foreignField: '_id',
             as: 'problem'
           }
